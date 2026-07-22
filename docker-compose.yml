@@ -1,7 +1,11 @@
-# One-command dev environment: MongoDB + NestJS backend.
-# The desktop frontend runs on the host and points at http://localhost:3000.
+# Dev infrastructure.
 #
-#   docker compose up --build      # start everything
+# Common workflow (run the app yourself, DB in Docker):
+#   docker compose up -d mongo     # start ONLY MongoDB (exposed on :27017)
+#   # then run backend + frontend from your own terminal
+#
+# Full stack in Docker (optional, needs no Node on host):
+#   docker compose up --build      # start Mongo + backend
 #   docker compose down            # stop
 #   docker compose down -v         # stop + wipe the database (fresh demo)
 
@@ -32,6 +36,11 @@ services:
         condition: service_healthy
     env_file:
       - ./backend/.env
+    # Inside the compose network the DB host is the `mongo` service, so we
+    # override MONGO_URI here. This keeps `.env` free to use `localhost` for
+    # running the backend directly on the host.
+    environment:
+      MONGO_URI: mongodb://root:example@mongo:27017/ems?authSource=admin
     ports:
       - '3000:3000'
 

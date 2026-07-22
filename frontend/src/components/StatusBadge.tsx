@@ -1,5 +1,11 @@
-import { Chip, Tooltip } from '@heroui/react';
-import type { LeadStatus } from '../api/types';
+import { Check, Clock, Loader2, X } from 'lucide-react';
+import type { LeadStatus } from '@/api/types';
+import { Badge, type BadgeProps } from '@/components/ui/badge';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 
 interface Props {
   status: LeadStatus;
@@ -8,52 +14,52 @@ interface Props {
 
 const CONFIG: Record<
   LeadStatus,
-  { label: string; color: 'default' | 'primary' | 'success' | 'danger'; icon: string }
+  { label: string; variant: BadgeProps['variant']; icon: React.ReactNode }
 > = {
-  pending: { label: 'Pending', color: 'default', icon: '○' },
-  sending: { label: 'Sending', color: 'primary', icon: '◐' },
-  sent: { label: 'Sent', color: 'success', icon: '✓' },
-  failed: { label: 'Failed', color: 'danger', icon: '✕' },
+  pending: {
+    label: 'Pending',
+    variant: 'muted',
+    icon: <Clock className="h-3 w-3" />,
+  },
+  sending: {
+    label: 'Sending',
+    variant: 'default',
+    icon: <Loader2 className="h-3 w-3 animate-spin" />,
+  },
+  sent: {
+    label: 'Sent',
+    variant: 'success',
+    icon: <Check className="h-3 w-3" />,
+  },
+  failed: {
+    label: 'Failed',
+    variant: 'destructive',
+    icon: <X className="h-3 w-3" />,
+  },
 };
 
-/** Maps a lead status enum to a colored, labelled, icon'd chip. */
 export function StatusBadge({ status, errorMessage }: Props) {
   const cfg = CONFIG[status];
-
-  const chip = (
-    <Chip
-      color={cfg.color}
-      variant="flat"
-      size="sm"
-      startContent={
-        <span
-          className={
-            'text-[0.7rem] leading-none ' +
-            (status === 'sending' ? 'ems-pulse' : '')
-          }
-          aria-hidden
-        >
-          {cfg.icon}
-        </span>
-      }
-      className="font-medium"
-    >
+  const badge = (
+    <Badge variant={cfg.variant}>
+      {cfg.icon}
       {cfg.label}
-    </Chip>
+    </Badge>
   );
 
   if (status === 'failed' && errorMessage) {
     return (
-      <Tooltip
-        content={errorMessage}
-        color="danger"
-        placement="top"
-        className="max-w-xs"
-      >
-        {chip}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button type="button" className="cursor-help">
+            {badge}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs bg-destructive text-destructive-foreground">
+          {errorMessage}
+        </TooltipContent>
       </Tooltip>
     );
   }
-
-  return chip;
+  return badge;
 }

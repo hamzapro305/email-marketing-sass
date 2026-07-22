@@ -1,77 +1,133 @@
-import { Card, CardBody, Chip, Progress } from '@heroui/react';
-import type { Campaign } from '../api/types';
+import { Check, Clock, X } from 'lucide-react';
+import type { Campaign } from '@/api/types';
+import { cn } from '@/lib/utils';
+import { Card } from '@/components/ui/card';
+import { Progress } from '@/components/ui/progress';
+import { AnimatedNumber } from './AnimatedNumber';
 
-interface Props {
-  campaign: Campaign;
-}
-
-function Stat({
-  label,
-  value,
-  color,
-}: {
-  label: string;
-  value: number;
-  color: string;
-}) {
+function Ring({ percent }: { percent: number }) {
+  const r = 34;
+  const c = 2 * Math.PI * r;
+  const offset = c - (percent / 100) * c;
   return (
-    <div className="flex flex-col items-center gap-1 px-4">
-      <span className={`text-2xl font-semibold tabular-nums ${color}`}>
-        {value}
-      </span>
-      <span className="text-xs uppercase tracking-wide text-default-500">
-        {label}
-      </span>
+    <div className="relative h-24 w-24 shrink-0">
+      <svg className="h-24 w-24 -rotate-90" viewBox="0 0 80 80">
+        <circle
+          cx="40"
+          cy="40"
+          r={r}
+          fill="none"
+          strokeWidth="7"
+          className="stroke-muted"
+        />
+        <circle
+          cx="40"
+          cy="40"
+          r={r}
+          fill="none"
+          strokeWidth="7"
+          strokeLinecap="round"
+          className="stroke-primary transition-all duration-500"
+          strokeDasharray={c}
+          strokeDashoffset={offset}
+        />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center">
+        <span className="text-xl font-semibold tabular-nums">{percent}%</span>
+      </div>
     </div>
   );
 }
 
-export function CampaignProgress({ campaign }: Props) {
+function Counter({
+  label,
+  value,
+  icon,
+  tone,
+}: {
+  label: string;
+  value: number;
+  icon: React.ReactNode;
+  tone: string;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-lg border bg-background/60 px-3 py-2.5">
+      <div
+        className={cn(
+          'flex h-8 w-8 items-center justify-center rounded-lg',
+          tone,
+        )}
+      >
+        {icon}
+      </div>
+      <div>
+        <AnimatedNumber
+          value={value}
+          className="block text-lg font-semibold leading-none tabular-nums"
+        />
+        <span className="text-xs text-muted-foreground">{label}</span>
+      </div>
+    </div>
+  );
+}
+
+export function CampaignProgress({ campaign }: { campaign: Campaign }) {
   const processed = campaign.sentCount + campaign.failedCount;
   const remaining = Math.max(0, campaign.totalLeads - processed);
   const percent =
     campaign.totalLeads === 0
       ? 0
       : Math.round((processed / campaign.totalLeads) * 100);
-  const isRunning = campaign.status === 'running';
+  const running = campaign.status === 'running';
 
   return (
-    <Card shadow="sm" className="border border-default-200">
-      <CardBody className="gap-4 p-6">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <h3 className="font-semibold">Campaign progress</h3>
-            <Chip
-              size="sm"
-              variant="dot"
-              color={isRunning ? 'primary' : 'success'}
-            >
-              {isRunning ? 'Running' : campaign.status}
-            </Chip>
+    <Card className="overflow-hidden">
+      <div className="flex flex-col gap-6 p-6 sm:flex-row sm:items-center">
+        <div className="flex items-center gap-5">
+          <Ring percent={percent} />
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="relative flex h-2.5 w-2.5">
+                {running && (
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/50" />
+                )}
+                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-primary" />
+              </span>
+              <h3 className="text-base font-semibold">
+                {running ? 'Sending campaign' : 'Wrapping up…'}
+              </h3>
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {processed} of {campaign.totalLeads} processed
+            </p>
+            <p className="mt-0.5 max-w-[220px] truncate text-xs text-muted-foreground/70">
+              {campaign.name}
+            </p>
           </div>
-          <span className="text-sm font-medium text-default-500 tabular-nums">
-            {processed}/{campaign.totalLeads} · {percent}%
-          </span>
         </div>
 
-        <Progress
-          aria-label="Campaign progress"
-          value={percent}
-          color={isRunning ? 'primary' : 'success'}
-          isIndeterminate={isRunning && processed === 0}
-          className="max-w-full"
-        />
-
-        <div className="flex items-stretch justify-around divide-x divide-default-200">
-          <Stat label="Sent" value={campaign.sentCount} color="text-success" />
-          <Stat
+        <div className="grid flex-1 grid-cols-1 gap-2.5 sm:grid-cols-3">
+          <Counter
+            label="Sent"
+            value={campaign.sentCount}
+            icon={<Check className="h-4 w-4" />}
+            tone="bg-success/10 text-success"
+          />
+          <Counter
             label="Failed"
             value={campaign.failedCount}
-            color="text-danger"
+            icon={<X className="h-4 w-4" />}
+            tone="bg-destructive/10 text-destructive"
           />
-          <Stat label="Remaining" value={remaining} color="text-default-700" />
+          <Counter
+            label="Remaining"
+            value={remaining}
+            icon={<Clock className="h-4 w-4" />}
+            tone="bg-muted text-muted-foreground"
+          />
         </div>
-      </CardBody>
+      </div>
+      <Progress value={percent} className="h-1.5 rounded-none" />
     </Card>
   );
 }

@@ -11,19 +11,24 @@ changing one environment flag (`EMAIL_MODE=demo` → `EMAIL_MODE=live`).
 
 ## Stack
 
-| Layer     | Tech                                              |
-| --------- | ------------------------------------------------- |
-| Frontend  | Electron + React + TypeScript + HeroUI + Tailwind |
-| Backend   | NestJS + TypeScript                               |
-| Database  | MongoDB 7 (Mongoose)                              |
-| Email     | Demo agent (default) / nodemailer SMTP (live)     |
-| Dev infra | Docker Compose (Mongo + backend)                  |
+| Layer     | Tech                                                     |
+| --------- | -------------------------------------------------------- |
+| Frontend  | Electron + React + TypeScript + **shadcn/ui** + Tailwind |
+| Backend   | NestJS + TypeScript                                      |
+| Database  | MongoDB 7 (Mongoose)                                     |
+| Email     | Demo agent (default) / nodemailer SMTP (live)            |
+| Dev infra | Docker (MongoDB); backend + frontend run on the host     |
+
+The UI is built on [shadcn/ui](https://ui.shadcn.com) — components live in
+`frontend/src/components/ui` (Radix primitives + Tailwind + CSS-variable design
+tokens), so the dashboard is easy to extend. Add more with
+`npx shadcn@latest add <component>` (config is in `frontend/components.json`).
 
 ## Repository layout
 
 ```
 .
-├── docker-compose.yml     # one-command dev spin-up (Mongo + backend)
+├── docker-compose.yml     # MongoDB service (+ optional dockerized backend)
 ├── sample-leads.csv       # 15 demo leads for the walkthrough
 ├── backend/               # NestJS API + demo/SMTP email agent
 │   ├── Dockerfile
@@ -34,24 +39,36 @@ changing one environment flag (`EMAIL_MODE=demo` → `EMAIL_MODE=live`).
 │       ├── campaigns/     # campaign run + orchestration + status
 │       └── email-agent/   # IEmailSender: demo + SMTP (chosen by env)
 └── frontend/              # Electron desktop app (frontend only)
+    ├── components.json    # shadcn/ui config
     └── src/
         ├── api/           # typed API client + local file parser
-        ├── hooks/         # useLeads, useCampaign (polling)
-        ├── components/    # ImportPanel, LeadTable, StatusBadge, …
+        ├── hooks/         # useLeads, useCampaign, useHealth, useTheme
+        ├── lib/           # cn() + formatting helpers
+        ├── components/
+        │   ├── ui/        # shadcn primitives (button, card, table, …)
+        │   └── layout/    # Sidebar, Header (dashboard shell)
         └── pages/         # WorkflowPage (the single workflow screen)
 ```
 
 ## Prerequisites
 
-- **Docker** (with Docker Compose) — runs Mongo + the backend.
-- **Node.js 20+** — runs the desktop frontend on the host.
+- **Docker** — runs MongoDB.
+- **Node.js 20+** — runs the backend and the desktop frontend.
 
-## 1. Start the backend + database (Docker)
+## 1. Start MongoDB (Docker)
 
 ```bash
 # from the repo root
-cp backend/.env.example backend/.env    # first time only
-docker compose up --build               # starts Mongo + backend on :3000
+docker compose up -d mongo     # MongoDB on localhost:27017
+```
+
+## 2. Start the backend (host)
+
+```bash
+cd backend
+cp .env.example .env    # first time only (defaults to localhost Mongo)
+npm install             # first time only
+npm run start:dev       # NestJS API on http://localhost:3000
 ```
 
 Verify it's healthy:
@@ -61,7 +78,7 @@ curl http://localhost:3000/api/health
 # {"status":"ok","emailMode":"demo",...}
 ```
 
-## 2. Start the desktop app (host)
+## 3. Start the desktop app (host)
 
 ```bash
 cd frontend
@@ -71,7 +88,11 @@ npm run dev        # launches the Electron desktop app
 
 The app points at `http://localhost:3000` by default.
 
-## 3. Run the demo
+> **Prefer everything in Docker?** `docker compose up --build` runs Mongo **and**
+> the backend together (the compose file points the backend at the `mongo`
+> service automatically). Then just run the frontend on the host.
+
+## 4. Run the demo
 
 1. Import **`sample-leads.csv`** (drag-and-drop or click to browse).
 2. Review the leads in the table — each starts as **Pending**.
@@ -84,10 +105,11 @@ The app points at `http://localhost:3000` by default.
 ## Useful commands
 
 ```bash
-docker compose up --build     # start everything
+docker compose up -d mongo    # start only MongoDB (common workflow)
+docker compose up --build     # start Mongo + backend together
 docker compose down           # stop + remove containers
 docker compose down -v        # stop + WIPE the database (fresh demo)
-docker compose logs -f backend
+docker compose logs -f mongo
 ```
 
 ## Switching to real SMTP (live mode)

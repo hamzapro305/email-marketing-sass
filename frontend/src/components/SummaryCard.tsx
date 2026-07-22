@@ -1,88 +1,105 @@
-import { Button, Card, CardBody } from '@heroui/react';
-import type { Campaign } from '../api/types';
+import { AlertTriangle, PartyPopper, RotateCcw, CheckCircle2 } from 'lucide-react';
+import type { Campaign } from '@/api/types';
+import { cn } from '@/lib/utils';
+import { Card } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { AnimatedNumber } from './AnimatedNumber';
+import { campaignElapsed } from '@/lib/format';
 
 interface Props {
   campaign: Campaign;
   onReset: () => void;
 }
 
-function elapsed(campaign: Campaign): string {
-  if (!campaign.startedAt || !campaign.completedAt) return '—';
-  const ms =
-    new Date(campaign.completedAt).getTime() -
-    new Date(campaign.startedAt).getTime();
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}m ${s}s`;
+function Tile({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: string;
+}) {
+  return (
+    <div className="rounded-xl border bg-background/60 p-4 text-center">
+      <AnimatedNumber
+        value={value}
+        className={cn('text-2xl font-semibold tabular-nums', tone)}
+      />
+      <p className="mt-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        {label}
+      </p>
+    </div>
+  );
 }
 
 export function SummaryCard({ campaign, onReset }: Props) {
   const failed = campaign.status === 'failed';
   const allSent = campaign.failedCount === 0 && campaign.sentCount > 0;
+  const successRate =
+    campaign.totalLeads === 0
+      ? 0
+      : Math.round((campaign.sentCount / campaign.totalLeads) * 100);
 
   return (
-    <Card
-      shadow="sm"
-      className={
-        'border ' +
-        (failed
-          ? 'border-danger-200 bg-danger-50/50'
-          : 'border-success-200 bg-success-50/40')
-      }
-    >
-      <CardBody className="gap-5 p-6">
-        <div className="flex items-center gap-3">
-          <div
-            className={
-              'flex h-12 w-12 items-center justify-center rounded-2xl text-2xl ' +
-              (failed ? 'bg-danger/15' : 'bg-success/15')
-            }
-          >
-            {failed ? '⚠️' : allSent ? '🎉' : '✅'}
-          </div>
-          <div>
-            <h3 className="text-lg font-semibold">
-              {failed ? 'Campaign ended with errors' : 'Campaign complete'}
-            </h3>
-            <p className="text-sm text-default-500">
-              {campaign.name}
-            </p>
-          </div>
+    <Card className="overflow-hidden">
+      <div
+        className={cn(
+          'flex items-center gap-4 px-6 py-6',
+          failed
+            ? 'bg-gradient-to-br from-destructive/15 to-destructive/5'
+            : 'bg-gradient-to-br from-success/15 to-primary/10',
+        )}
+      >
+        <div
+          className={cn(
+            'flex h-14 w-14 items-center justify-center rounded-2xl',
+            failed ? 'bg-destructive/15 text-destructive' : 'bg-success/20 text-success',
+          )}
+        >
+          {failed ? (
+            <AlertTriangle className="h-7 w-7" />
+          ) : allSent ? (
+            <PartyPopper className="h-7 w-7" />
+          ) : (
+            <CheckCircle2 className="h-7 w-7" />
+          )}
         </div>
-
-        <div className="grid grid-cols-4 gap-3 text-center">
-          <div className="rounded-xl bg-content1 p-3 shadow-sm">
-            <p className="text-xl font-semibold tabular-nums">
-              {campaign.totalLeads}
-            </p>
-            <p className="text-xs text-default-500">Total</p>
-          </div>
-          <div className="rounded-xl bg-content1 p-3 shadow-sm">
-            <p className="text-xl font-semibold tabular-nums text-success">
-              {campaign.sentCount}
-            </p>
-            <p className="text-xs text-default-500">Sent</p>
-          </div>
-          <div className="rounded-xl bg-content1 p-3 shadow-sm">
-            <p className="text-xl font-semibold tabular-nums text-danger">
-              {campaign.failedCount}
-            </p>
-            <p className="text-xs text-default-500">Failed</p>
-          </div>
-          <div className="rounded-xl bg-content1 p-3 shadow-sm">
-            <p className="text-xl font-semibold tabular-nums">
-              {elapsed(campaign)}
-            </p>
-            <p className="text-xs text-default-500">Elapsed</p>
-          </div>
+        <div>
+          <h3 className="text-xl font-semibold tracking-tight">
+            {failed
+              ? 'Campaign ended with errors'
+              : allSent
+                ? 'All emails sent!'
+                : 'Campaign complete'}
+          </h3>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            {campaign.sentCount} of {campaign.totalLeads} delivered ·{' '}
+            {successRate}% success rate
+          </p>
         </div>
+      </div>
 
-        <Button color="primary" variant="flat" onPress={onReset}>
+      <div className="grid grid-cols-2 gap-3 p-6 sm:grid-cols-4">
+        <Tile label="Total" value={campaign.totalLeads} tone="text-foreground" />
+        <Tile label="Sent" value={campaign.sentCount} tone="text-success" />
+        <Tile label="Failed" value={campaign.failedCount} tone="text-destructive" />
+        <div className="rounded-xl border bg-background/60 p-4 text-center">
+          <span className="text-2xl font-semibold tabular-nums text-foreground">
+            {campaignElapsed(campaign.startedAt, campaign.completedAt)}
+          </span>
+          <p className="mt-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Elapsed
+          </p>
+        </div>
+      </div>
+
+      <div className="px-6 pb-6">
+        <Button size="lg" className="w-full" onClick={onReset}>
+          <RotateCcw className="h-4 w-4" />
           Start a new campaign
         </Button>
-      </CardBody>
+      </div>
     </Card>
   );
 }
