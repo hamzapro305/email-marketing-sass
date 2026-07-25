@@ -1,4 +1,4 @@
-import { Check, Clock, Loader2, X } from 'lucide-react';
+import { Check, Clock, Loader2, Send, Sparkles, X } from 'lucide-react';
 import type { LeadStatus } from '@/api/types';
 import { Badge, type BadgeProps } from '@/components/ui/badge';
 import {
@@ -21,10 +21,20 @@ const CONFIG: Record<
     variant: 'muted',
     icon: <Clock className="h-3 w-3" />,
   },
+  queued: {
+    label: 'Queued',
+    variant: 'muted',
+    icon: <Loader2 className="h-3 w-3 animate-spin" />,
+  },
+  writing: {
+    label: 'Writing',
+    variant: 'default',
+    icon: <Sparkles className="h-3 w-3 animate-pulse" />,
+  },
   sending: {
     label: 'Sending',
     variant: 'default',
-    icon: <Loader2 className="h-3 w-3 animate-spin" />,
+    icon: <Send className="h-3 w-3 animate-pulse" />,
   },
   sent: {
     label: 'Sent',

@@ -1,20 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
-import type { Lead } from '../api/types';
+import type { Campaign } from '../api/types';
 
-/** Loads and exposes the current lead list, with a manual refresh. */
-export function useLeads() {
-  const [leads, setLeads] = useState<Lead[]>([]);
+/** Loads the session's campaigns for the list page. */
+export function useCampaigns() {
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    setLoading(true);
     setError(null);
     try {
-      setLeads(await api.listLeads());
+      setCampaigns(await api.listCampaigns());
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load leads');
+      setError(e instanceof Error ? e.message : 'Failed to load campaigns');
     } finally {
       setLoading(false);
     }
@@ -24,5 +23,5 @@ export function useLeads() {
     void refresh();
   }, [refresh]);
 
-  return { leads, setLeads, loading, error, refresh };
+  return { campaigns, setCampaigns, loading, error, refresh };
 }

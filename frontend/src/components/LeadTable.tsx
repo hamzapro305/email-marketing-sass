@@ -21,10 +21,17 @@ import { StatusBadge } from './StatusBadge';
 interface Props {
   leads: Lead[];
   loading?: boolean;
+  /** Show a column with each lead's campaign name (for the all-leads view). */
+  showCampaign?: boolean;
+  /** Make rows clickable (e.g. to open the lead detail page). */
+  onRowClick?: (lead: Lead) => void;
 }
 
 const ROWS_PER_PAGE = 7;
-type Filter = 'all' | LeadStatus;
+type Filter = 'all' | 'pending' | 'active' | 'sent' | 'failed';
+
+/** Live, in-flight run states grouped under a single "In progress" filter. */
+const ACTIVE_STATUSES: LeadStatus[] = ['queued', 'writing', 'sending'];
 
 function LeadAvatar({ lead }: { lead: Lead }) {
   return (
@@ -39,7 +46,12 @@ function LeadAvatar({ lead }: { lead: Lead }) {
   );
 }
 
-export function LeadTable({ leads, loading }: Props) {
+export function LeadTable({
+  leads,
+  loading,
+  showCampaign,
+  onRowClick,
+}: Props) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const [page, setPage] = useState(1);
@@ -48,18 +60,28 @@ export function LeadTable({ leads, loading }: Props) {
     const c: Record<Filter, number> = {
       all: leads.length,
       pending: 0,
-      sending: 0,
+      active: 0,
       sent: 0,
       failed: 0,
     };
-    for (const l of leads) c[l.status] += 1;
+    for (const l of leads) {
+      if (l.status === 'sent') c.sent += 1;
+      else if (l.status === 'failed') c.failed += 1;
+      else if (l.status === 'pending') c.pending += 1;
+      else c.active += 1; // queued | writing | sending
+    }
     return c;
   }, [leads]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const matches = (status: LeadStatus): boolean => {
+      if (filter === 'all') return true;
+      if (filter === 'active') return ACTIVE_STATUSES.includes(status);
+      return status === filter;
+    };
     return leads.filter((l) => {
-      if (filter !== 'all' && l.status !== filter) return false;
+      if (!matches(l.status)) return false;
       if (!q) return true;
       return (
         l.email.toLowerCase().includes(q) ||
@@ -96,7 +118,7 @@ export function LeadTable({ leads, loading }: Props) {
           <TabsList>
             <TabsTrigger value="all">All · {counts.all}</TabsTrigger>
             <TabsTrigger value="pending">Pending · {counts.pending}</TabsTrigger>
-            <TabsTrigger value="sending">Sending · {counts.sending}</TabsTrigger>
+            <TabsTrigger value="active">In progress · {counts.active}</TabsTrigger>
             <TabsTrigger value="sent">Sent · {counts.sent}</TabsTrigger>
             <TabsTrigger value="failed">Failed · {counts.failed}</TabsTrigger>
           </TabsList>
@@ -110,7 +132,11 @@ export function LeadTable({ leads, loading }: Props) {
             <TableRow className="bg-muted/50 hover:bg-muted/50">
               <TableHead>Lead</TableHead>
               <TableHead>Company</TableHead>
-              <TableHead>Title</TableHead>
+              {showCampaign ? (
+                <TableHead>Campaign</TableHead>
+              ) : (
+                <TableHead>Title</TableHead>
+              )}
               <TableHead className="text-right">Status</TableHead>
             </TableRow>
           </TableHeader>
@@ -148,7 +174,11 @@ export function LeadTable({ leads, loading }: Props) {
               </TableRow>
             ) : (
               items.map((lead) => (
-                <TableRow key={lead._id}>
+                <TableRow
+                  key={lead._id}
+                  onClick={onRowClick ? () => onRowClick(lead) : undefined}
+                  className={onRowClick ? 'cursor-pointer' : undefined}
+                >
                   <TableCell>
                     <div className="flex items-center gap-3">
                       <LeadAvatar lead={lead} />
@@ -165,9 +195,15 @@ export function LeadTable({ leads, loading }: Props) {
                   <TableCell className="text-muted-foreground">
                     {lead.company || '—'}
                   </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {lead.title || '—'}
-                  </TableCell>
+                  {showCampaign ? (
+                    <TableCell className="text-muted-foreground">
+                      {lead.campaignName || '—'}
+                    </TableCell>
+                  ) : (
+                    <TableCell className="text-muted-foreground">
+                      {lead.title || '—'}
+                    </TableCell>
+                  )}
                   <TableCell className="text-right">
                     <div className="flex justify-end">
                       <StatusBadge

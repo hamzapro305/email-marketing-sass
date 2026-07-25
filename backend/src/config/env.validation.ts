@@ -1,46 +1,28 @@
 import * as Joi from 'joi';
 
 /**
- * Startup validation schema for all environment variables.
- * The app refuses to boot if the environment is misconfigured, and
- * SMTP_* fields become required only when EMAIL_MODE=live.
+ * Startup validation schema for all environment variables. The app refuses to
+ * boot if the environment is misconfigured. SMTP is configured in-app per user
+ * (see `smtp-accounts/`), so there are no SMTP_* env vars.
  */
 export const envValidationSchema = Joi.object({
   PORT: Joi.number().default(3000),
 
   MONGO_URI: Joi.string().uri({ scheme: [/mongodb(\+srv)?/] }).required(),
 
-  EMAIL_MODE: Joi.string().valid('demo', 'live').default('demo'),
+  // Redis backs the BullMQ job queue that distributes campaign sends across
+  // every backend replica. Required so the queue can be shared.
+  REDIS_HOST: Joi.string().default('localhost'),
+  REDIS_PORT: Joi.number().default(6379),
 
-  SEND_CONCURRENCY: Joi.number().integer().min(1).max(50).default(3),
+  // Optional label for this replica (compose sets it per service/replica).
+  INSTANCE_ID: Joi.string().optional().allow(''),
+
+  // Per-replica worker concurrency. Total parallelism ≈ replicas × this value.
+  SEND_CONCURRENCY: Joi.number().integer().min(1).max(500).default(3),
 
   CORS_ORIGIN: Joi.string().default('*'),
 
-  // SMTP settings — required only in live mode.
-  SMTP_HOST: Joi.string().when('EMAIL_MODE', {
-    is: 'live',
-    then: Joi.required(),
-    otherwise: Joi.optional().allow(''),
-  }),
-  SMTP_PORT: Joi.number().when('EMAIL_MODE', {
-    is: 'live',
-    then: Joi.required(),
-    otherwise: Joi.optional().allow(''),
-  }),
-  SMTP_SECURE: Joi.boolean().truthy('true').falsy('false').default(false),
-  SMTP_USER: Joi.string().when('EMAIL_MODE', {
-    is: 'live',
-    then: Joi.required(),
-    otherwise: Joi.optional().allow(''),
-  }),
-  SMTP_PASS: Joi.string().when('EMAIL_MODE', {
-    is: 'live',
-    then: Joi.required(),
-    otherwise: Joi.optional().allow(''),
-  }),
-  SMTP_FROM: Joi.string().when('EMAIL_MODE', {
-    is: 'live',
-    then: Joi.required(),
-    otherwise: Joi.optional().allow(''),
-  }),
+  // Google ADK email-writer sidecar.
+  AI_WRITER_URL: Joi.string().uri().default('http://localhost:8000'),
 });

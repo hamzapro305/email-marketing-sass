@@ -16,6 +16,7 @@ import {
 
 interface Props {
   crumb: string;
+  section?: string;
   isDark: boolean;
   onToggleTheme: () => void;
   onReset?: () => void;
@@ -25,6 +26,7 @@ interface Props {
 
 export function Header({
   crumb,
+  section = 'Campaigns',
   isDark,
   onToggleTheme,
   onReset,
@@ -38,7 +40,7 @@ export function Header({
         <span className="font-medium text-muted-foreground md:hidden">
           Mailflow
         </span>
-        <span className="text-muted-foreground">Campaigns</span>
+        <span className="text-muted-foreground">{section}</span>
         <ChevronRight className="h-4 w-4 text-muted-foreground/60" />
         <span className="font-medium text-foreground">{crumb}</span>
       </div>

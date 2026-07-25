@@ -12,22 +12,23 @@ import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useHealth } from '@/hooks/useHealth';
+import type { NavSection } from '@/lib/nav';
 
 interface NavItem {
+  key?: NavSection;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
-  active?: boolean;
   soon?: boolean;
 }
 
-// The workflow lives under "Campaigns" today; the rest are placeholders that
-// signal where future features will slot in.
+// The two live pages have a `key`; the rest are placeholders that signal where
+// future features will slot in.
 const NAV: NavItem[] = [
-  { label: 'Campaigns', icon: LayoutDashboard, active: true },
-  { label: 'Leads', icon: Users, soon: true },
+  { key: 'campaigns', label: 'Campaigns', icon: LayoutDashboard },
+  { key: 'leads', label: 'Leads', icon: Users },
   { label: 'Templates', icon: FileText, soon: true },
   { label: 'Analytics', icon: BarChart3, soon: true },
-  { label: 'Settings', icon: Settings, soon: true },
+  { key: 'settings', label: 'Settings', icon: Settings },
 ];
 
 function ConnectionDot({
@@ -54,10 +55,12 @@ function ConnectionDot({
 interface Props {
   isDark: boolean;
   onToggleTheme: () => void;
+  active: NavSection;
+  onNavigate: (key: NavSection) => void;
 }
 
-export function Sidebar({ isDark, onToggleTheme }: Props) {
-  const { connection, emailMode } = useHealth();
+export function Sidebar({ isDark, onToggleTheme, active, onNavigate }: Props) {
+  const { connection } = useHealth();
 
   return (
     <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:flex">
@@ -88,14 +91,16 @@ export function Sidebar({ isDark, onToggleTheme }: Props) {
         </p>
         {NAV.map((item) => {
           const Icon = item.icon;
+          const isActive = !!item.key && item.key === active;
           return (
             <button
               key={item.label}
               type="button"
               disabled={item.soon}
+              onClick={() => item.key && onNavigate(item.key)}
               className={cn(
                 'group flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-                item.active
+                isActive
                   ? 'bg-sidebar-accent text-sidebar-accent-foreground'
                   : 'text-sidebar-foreground hover:bg-sidebar-accent/50 hover:text-foreground',
                 item.soon && 'cursor-not-allowed opacity-60 hover:bg-transparent',
@@ -120,9 +125,7 @@ export function Sidebar({ isDark, onToggleTheme }: Props) {
             <ConnectionDot state={connection} />
             <span className="text-xs font-medium text-muted-foreground">
               {connection === 'online'
-                ? emailMode
-                  ? `${emailMode} mode`
-                  : 'Connected'
+                ? 'Connected'
                 : connection === 'offline'
                   ? 'Backend offline'
                   : 'Connecting…'}

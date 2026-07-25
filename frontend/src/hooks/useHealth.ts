@@ -5,15 +5,11 @@ type Connection = 'connecting' | 'online' | 'offline';
 
 interface Health {
   connection: Connection;
-  emailMode: 'demo' | 'live' | null;
 }
 
-/** Polls the backend health endpoint to show connectivity + active email mode. */
+/** Polls the backend health endpoint to show connectivity. */
 export function useHealth(): Health {
-  const [health, setHealth] = useState<Health>({
-    connection: 'connecting',
-    emailMode: null,
-  });
+  const [health, setHealth] = useState<Health>({ connection: 'connecting' });
 
   useEffect(() => {
     let alive = true;
@@ -21,14 +17,9 @@ export function useHealth(): Health {
       try {
         const res = await fetch(`${API_BASE}/health`);
         if (!res.ok) throw new Error('bad status');
-        const body = (await res.json()) as { emailMode?: 'demo' | 'live' };
-        if (alive)
-          setHealth({
-            connection: 'online',
-            emailMode: body.emailMode ?? null,
-          });
+        if (alive) setHealth({ connection: 'online' });
       } catch {
-        if (alive) setHealth((h) => ({ ...h, connection: 'offline' }));
+        if (alive) setHealth({ connection: 'offline' });
       }
     };
     void check();

@@ -1,13 +1,24 @@
-# Dev infrastructure.
+# Dev / demo infrastructure — horizontally-scaled email sender.
 #
-# Common workflow (run the app yourself, DB in Docker):
-#   docker compose up -d mongo     # start ONLY MongoDB (exposed on :27017)
+# Architecture:
+#   nginx (load balancer, the only exposed port)
+#     └─> backend  ×N replicas   (REST API  +  BullMQ workers)
+#           ├─> mongo            (source of truth: leads, files, campaigns)
+#           └─> redis            (shared job queue → parallel sends across replicas)
+#
+# Whichever replica nginx routes the "start campaign" request to only *enqueues*
+# the work; Redis then hands the per-lead jobs to ALL replicas, so a 10k-lead
+# campaign is processed in parallel across every backend container.
+#
+# Common workflow (run the app yourself, infra in Docker):
+#   docker compose up -d mongo redis
 #   # then run backend + frontend from your own terminal
 #
-# Full stack in Docker (optional, needs no Node on host):
-#   docker compose up --build      # start Mongo + backend
-#   docker compose down            # stop
-#   docker compose down -v         # stop + wipe the database (fresh demo)
+# Full stack in Docker:
+#   docker compose up --build                 # nginx + 3 backends + mongo + redis
+#   docker compose up --build --scale backend=5   # more replicas = more throughput
+#   docker compose down                       # stop
+#   docker compose down -v                    # stop + wipe data (fresh demo)
 
 services:
   mongo:
@@ -27,6 +38,21 @@ services:
       retries: 5
       start_period: 20s
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis-data:/data
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   backend:
     build:
       context: ./backend
@@ -34,15 +60,61 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      email-writer:
+        condition: service_healthy
     env_file:
       - ./backend/.env
-    # Inside the compose network the DB host is the `mongo` service, so we
-    # override MONGO_URI here. This keeps `.env` free to use `localhost` for
-    # running the backend directly on the host.
+    # Inside the compose network the DB/queue hosts are the service names, so we
+    # override the connection env here. This keeps `.env` free to use localhost
+    # when running the backend directly on the host.
     environment:
       MONGO_URI: mongodb://root:example@mongo:27017/ems?authSource=admin
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      AI_WRITER_URL: http://email-writer:8000
+    # No published ports — traffic only reaches the backend through nginx.
+    expose:
+      - '3000'
+    deploy:
+      replicas: 3
+
+  # Google ADK email-writing sidecar. Holds NO LLM credentials — the backend
+  # sends the user's chosen provider/model/key per request (from Settings → AI
+  # providers). With no LLM on a request it returns a local fallback email.
+  # `host.docker.internal` lets the app reach an Ollama running on the host.
+  email-writer:
+    build:
+      context: ./ai-writer
+    restart: unless-stopped
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    expose:
+      - '8000'
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - backend
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    # nginx is the single entry point. Host :3000 keeps the frontend's default
+    # API URL (http://localhost:3000/api) working with no changes.
     ports:
-      - '3000:3000'
+      - '3000:80'
 
 volumes:
   mongo-data:
+  redis-data:

@@ -29,7 +29,6 @@ async function bootstrap() {
   await app.listen(port, '0.0.0.0');
 
   logger.log(`🚀 Backend listening on http://localhost:${port}/api`);
-  logger.log(`   EMAIL_MODE=${config.get('app.emailMode')}`);
 }
 
 bootstrap();

@@ -1,85 +1,25 @@
-import {
-  BadRequestException,
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Post,
-  Query,
-  UploadedFile,
-  UseInterceptors,
-} from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { Controller, Get, Param, Query } from '@nestjs/common';
 import { LeadsService } from './leads.service';
-import { ImportLeadsJsonDto } from './dto/import-leads.dto';
-import { QueryLeadsDto } from './dto/query-leads.dto';
-import { parseFile, ParsedLeadRow } from './lead-parser';
+import { SessionId } from '../common/session-id.decorator';
 
-// Express.Multer.File is available through @types/multer.
-type UploadedFileType = {
-  originalname: string;
-  mimetype: string;
-  buffer: Buffer;
-};
-
+/** Read-only views over all leads in a session (across campaigns). */
 @Controller('leads')
 export class LeadsController {
   constructor(private readonly leadsService: LeadsService) {}
 
-  /**
-   * Accepts EITHER a multipart file upload (field name `file`) OR a JSON body
-   * `{ leads: [...] }` of already-parsed rows. Persists valid rows as pending.
-   */
-  @Post('import')
-  @UseInterceptors(FileInterceptor('file'))
-  async import(
-    @UploadedFile() file: UploadedFileType | undefined,
-    @Body() body: ImportLeadsJsonDto | Record<string, unknown>,
-  ) {
-    let rows: ParsedLeadRow[] = [];
-    let skipped = 0;
-
-    if (file?.buffer) {
-      const result = parseFile(file.originalname, file.mimetype, file.buffer);
-      rows = result.rows;
-      skipped = result.skipped;
-    } else if (Array.isArray((body as ImportLeadsJsonDto)?.leads)) {
-      const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      for (const raw of (body as ImportLeadsJsonDto).leads) {
-        const email = (raw.email ?? '').toString().trim().toLowerCase();
-        if (!emailRe.test(email)) {
-          skipped += 1;
-          continue;
-        }
-        rows.push({
-          email,
-          firstName: (raw.firstName ?? '').toString().trim(),
-          lastName: (raw.lastName ?? '').toString().trim(),
-          company: (raw.company ?? '').toString().trim(),
-          title: (raw.title ?? '').toString().trim(),
-        });
-      }
-    } else {
-      throw new BadRequestException(
-        'Provide a file upload (field "file") or a JSON body { leads: [...] }.',
-      );
-    }
-
-    const summary = await this.leadsService.importRows(rows, skipped);
-    return {
-      imported: summary.imported,
-      skipped: summary.skipped,
-      leads: summary.leads,
-    };
-  }
-
+  /** All leads, each tagged with its campaign name. */
   @Get()
-  async list(@Query() query: QueryLeadsDto) {
-    return this.leadsService.findAll(query);
+  async list(
+    @SessionId() sessionId: string,
+    @Query('campaignId') campaignId?: string,
+    @Query('status') status?: string,
+  ) {
+    return this.leadsService.listAll(sessionId, { campaignId, status });
   }
 
-  @Delete()
-  async clear() {
-    return this.leadsService.clearAll();
+  /** A single lead with campaign context. */
+  @Get(':id')
+  async getOne(@SessionId() sessionId: string, @Param('id') id: string) {
+    return this.leadsService.findOne(sessionId, id);
   }
 }

@@ -1,75 +1,93 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { Lead, LeadDocument, LeadStatus } from './lead.schema';
-import { ParsedLeadRow } from './lead-parser';
-import { QueryLeadsDto } from './dto/query-leads.dto';
+import { Lead, LeadDocument } from './lead.schema';
 
-export interface ImportSummary {
-  imported: number;
-  skipped: number;
-  leads: LeadDocument[];
+/** A lead enriched with the name of the campaign it belongs to. */
+export interface LeadWithCampaign {
+  _id: Types.ObjectId;
+  email: string;
+  firstName: string;
+  lastName: string;
+  company: string;
+  title: string;
+  status: string;
+  errorMessage: string | null;
+  sentAt: Date | null;
+  campaignId: Types.ObjectId | null;
+  campaignName: string | null;
+  sessionId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 @Injectable()
 export class LeadsService {
-  private readonly logger = new Logger(LeadsService.name);
-
   constructor(
     @InjectModel(Lead.name) private readonly leadModel: Model<LeadDocument>,
   ) {}
 
-  /** Persist a batch of parsed rows as `pending` leads. */
-  async importRows(
-    rows: ParsedLeadRow[],
-    skipped: number,
-  ): Promise<ImportSummary> {
-    if (rows.length === 0) {
-      return { imported: 0, skipped, leads: [] };
+  /** All leads for a session, newest activity first, each with its campaign name. */
+  async listAll(
+    sessionId: string,
+    opts: { campaignId?: string; status?: string } = {},
+  ): Promise<LeadWithCampaign[]> {
+    const match: Record<string, unknown> = { sessionId };
+    if (opts.campaignId && Types.ObjectId.isValid(opts.campaignId)) {
+      match.campaignId = new Types.ObjectId(opts.campaignId);
     }
+    if (opts.status) match.status = opts.status;
 
-    const docs = rows.map((row) => ({
-      email: row.email,
-      firstName: row.firstName,
-      lastName: row.lastName,
-      company: row.company,
-      title: row.title,
-      status: LeadStatus.Pending,
-      errorMessage: null,
-      sentAt: null,
-      campaignId: null,
-    }));
-
-    const leads = await this.leadModel.insertMany(docs);
-    this.logger.log(`Imported ${leads.length} leads (skipped ${skipped}).`);
-    return { imported: leads.length, skipped, leads: leads as LeadDocument[] };
+    return this.leadModel.aggregate<LeadWithCampaign>([
+      { $match: match },
+      { $sort: { updatedAt: -1 } },
+      { $limit: 5000 },
+      {
+        $lookup: {
+          from: 'campaigns',
+          localField: 'campaignId',
+          foreignField: '_id',
+          as: 'campaign',
+        },
+      },
+      {
+        $addFields: {
+          campaignName: {
+            $ifNull: [{ $arrayElemAt: ['$campaign.name', 0] }, null],
+          },
+        },
+      },
+      { $project: { campaign: 0, __v: 0 } },
+    ]);
   }
 
-  async findAll(query: QueryLeadsDto): Promise<LeadDocument[]> {
-    const filter: Record<string, unknown> = {};
-    if (query.campaignId) filter.campaignId = new Types.ObjectId(query.campaignId);
-    if (query.status) filter.status = query.status;
-    return this.leadModel.find(filter).sort({ createdAt: 1 }).exec();
-  }
-
-  async findByCampaign(campaignId: string): Promise<LeadDocument[]> {
-    return this.leadModel
-      .find({ campaignId: new Types.ObjectId(campaignId) })
-      .sort({ createdAt: 1 })
-      .exec();
-  }
-
-  async findPending(): Promise<LeadDocument[]> {
-    return this.leadModel
-      .find({ status: LeadStatus.Pending, campaignId: null })
-      .sort({ createdAt: 1 })
-      .exec();
-  }
-
-  /** Remove all leads — used to reset the demo. */
-  async clearAll(): Promise<{ deleted: number }> {
-    const res = await this.leadModel.deleteMany({}).exec();
-    this.logger.log(`Cleared ${res.deletedCount ?? 0} leads.`);
-    return { deleted: res.deletedCount ?? 0 };
+  /** A single lead with its campaign name. */
+  async findOne(sessionId: string, id: string): Promise<LeadWithCampaign> {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new NotFoundException(`Lead ${id} not found`);
+    }
+    const [lead] = await this.leadModel.aggregate<LeadWithCampaign>([
+      { $match: { _id: new Types.ObjectId(id), sessionId } },
+      {
+        $lookup: {
+          from: 'campaigns',
+          localField: 'campaignId',
+          foreignField: '_id',
+          as: 'campaign',
+        },
+      },
+      {
+        $addFields: {
+          campaignName: {
+            $ifNull: [{ $arrayElemAt: ['$campaign.name', 0] }, null],
+          },
+        },
+      },
+      { $project: { campaign: 0, __v: 0 } },
+    ]);
+    if (!lead) {
+      throw new NotFoundException(`Lead ${id} not found`);
+    }
+    return lead;
   }
 }

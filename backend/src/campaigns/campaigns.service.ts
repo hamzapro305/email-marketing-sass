@@ -1,180 +1,326 @@
 import {
-  Inject,
+  BadRequestException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { InjectQueue } from '@nestjs/bullmq';
 import { InjectModel } from '@nestjs/mongoose';
+import { Queue } from 'bullmq';
 import { Model, Types } from 'mongoose';
 import { Campaign, CampaignDocument, CampaignStatus } from './campaign.schema';
+import {
+  CampaignFile,
+  CampaignFileDocument,
+} from './campaign-file.schema';
 import { Lead, LeadDocument, LeadStatus } from '../leads/lead.schema';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
-import {
-  EMAIL_SENDER,
-  IEmailSender,
-} from '../email-agent/email-sender.interface';
+import { SEND_QUEUE, SendJobData } from './queue.constants';
+import { parseFile } from '../leads/lead-parser';
+import { SmtpAccountsService } from '../smtp-accounts/smtp-accounts.service';
+
+export interface UploadedFileType {
+  originalname: string;
+  mimetype: string;
+  size: number;
+  buffer: Buffer;
+}
 
 @Injectable()
 export class CampaignsService {
   private readonly logger = new Logger(CampaignsService.name);
-  private readonly concurrency: number;
 
   constructor(
     @InjectModel(Campaign.name)
     private readonly campaignModel: Model<CampaignDocument>,
+    @InjectModel(CampaignFile.name)
+    private readonly fileModel: Model<CampaignFileDocument>,
     @InjectModel(Lead.name)
     private readonly leadModel: Model<LeadDocument>,
-    @Inject(EMAIL_SENDER) private readonly emailSender: IEmailSender,
-    config: ConfigService,
-  ) {
-    this.concurrency = config.get<number>('app.sendConcurrency') ?? 3;
-  }
+    @InjectQueue(SEND_QUEUE) private readonly sendQueue: Queue<SendJobData>,
+    private readonly smtpAccounts: SmtpAccountsService,
+  ) {}
 
-  /**
-   * Create a campaign from all currently-pending, unassigned leads and kick off
-   * the run in the background. Returns immediately so the frontend can poll.
-   */
-  async createAndStart(dto: CreateCampaignDto): Promise<CampaignDocument> {
-    const pending = await this.leadModel
-      .find({ status: LeadStatus.Pending, campaignId: null })
-      .sort({ createdAt: 1 })
-      .exec();
-
+  /** Create a campaign as a draft — no leads yet, nothing sent. */
+  async create(
+    sessionId: string,
+    dto: CreateCampaignDto,
+  ): Promise<CampaignDocument> {
     const campaign = await this.campaignModel.create({
-      name: dto.name?.trim() || `Campaign ${new Date().toISOString()}`,
+      name: dto.name?.trim() || `Campaign ${new Date().toLocaleString()}`,
+      description: dto.description?.trim() ?? '',
+      sessionId,
       status: CampaignStatus.Draft,
-      totalLeads: pending.length,
+      totalLeads: 0,
       sentCount: 0,
       failedCount: 0,
       startedAt: null,
       completedAt: null,
     });
-
-    // Assign the pending leads to this campaign up front.
-    if (pending.length > 0) {
-      await this.leadModel.updateMany(
-        { _id: { $in: pending.map((l) => l._id) } },
-        { $set: { campaignId: campaign._id } },
-      );
-    }
-
-    // Fire-and-forget the processing loop; errors are captured on the campaign.
-    void this.runCampaign(campaign._id.toString()).catch((err) => {
-      this.logger.error(
-        `Campaign ${campaign._id} crashed: ${err?.message ?? err}`,
-      );
-    });
-
+    this.logger.log(`Session ${sessionId}: created campaign "${campaign.name}".`);
     return campaign;
   }
 
-  async findOne(id: string): Promise<CampaignDocument> {
-    const campaign = await this.campaignModel.findById(id).exec();
+  /** All campaigns for a session, newest first. */
+  async list(sessionId: string): Promise<CampaignDocument[]> {
+    return this.campaignModel
+      .find({ sessionId })
+      .sort({ createdAt: -1 })
+      .limit(500)
+      .exec();
+  }
+
+  /** One campaign (scoped to the session). */
+  async findOne(sessionId: string, id: string): Promise<CampaignDocument> {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new NotFoundException(`Campaign ${id} not found`);
+    }
+    const campaign = await this.campaignModel
+      .findOne({ _id: new Types.ObjectId(id), sessionId })
+      .exec();
     if (!campaign) {
       throw new NotFoundException(`Campaign ${id} not found`);
     }
     return campaign;
   }
 
-  async findLeads(id: string): Promise<LeadDocument[]> {
-    await this.findOne(id); // 404 if the campaign doesn't exist
-    return this.leadModel
-      .find({ campaignId: new Types.ObjectId(id) })
-      .sort({ createdAt: 1 })
+  /**
+   * Upload a CSV/XLSX into a campaign: parse it, record the file, and store its
+   * rows as `pending` leads attached to the campaign. Not allowed mid-run.
+   */
+  async uploadLeads(
+    sessionId: string,
+    id: string,
+    file: UploadedFileType,
+  ): Promise<{ file: CampaignFileDocument; imported: number; skipped: number }> {
+    const campaign = await this.findOne(sessionId, id);
+    if (campaign.status === CampaignStatus.Running) {
+      throw new BadRequestException(
+        'Cannot add leads while the campaign is running.',
+      );
+    }
+    if (!file?.buffer) {
+      throw new BadRequestException('No file provided (field name must be "file").');
+    }
+
+    const { rows, skipped } = parseFile(
+      file.originalname,
+      file.mimetype,
+      file.buffer,
+    );
+
+    const fileDoc = await this.fileModel.create({
+      campaignId: campaign._id,
+      sessionId,
+      originalName: file.originalname,
+      size: file.size ?? file.buffer.length,
+      leadCount: 0,
+      skipped,
+    });
+
+    if (rows.length > 0) {
+      const CHUNK = 2000;
+      for (let i = 0; i < rows.length; i += CHUNK) {
+        const chunk = rows.slice(i, i + CHUNK).map((row) => ({
+          email: row.email,
+          firstName: row.firstName,
+          lastName: row.lastName,
+          company: row.company,
+          title: row.title,
+          status: LeadStatus.Pending,
+          errorMessage: null,
+          sentAt: null,
+          campaignId: campaign._id,
+          sessionId,
+          fileId: fileDoc._id,
+        }));
+        await this.leadModel.insertMany(chunk, { ordered: false });
+      }
+    }
+
+    fileDoc.leadCount = rows.length;
+    await fileDoc.save();
+    await this.recountTotal(campaign._id);
+
+    this.logger.log(
+      `Campaign ${id}: added "${file.originalname}" — ${rows.length} leads (skipped ${skipped}).`,
+    );
+    return { file: fileDoc, imported: rows.length, skipped };
+  }
+
+  /** Files uploaded to a campaign, newest first, with live pending counts. */
+  async listFiles(
+    sessionId: string,
+    id: string,
+  ): Promise<Array<CampaignFileDocument & { pendingCount: number }>> {
+    const campaign = await this.findOne(sessionId, id);
+    const files = await this.fileModel
+      .find({ campaignId: campaign._id })
+      .sort({ createdAt: -1 })
       .exec();
+
+    const counts = await this.leadModel.aggregate<{
+      _id: Types.ObjectId;
+      pending: number;
+    }>([
+      {
+        $match: {
+          campaignId: campaign._id,
+          status: LeadStatus.Pending,
+        },
+      },
+      { $group: { _id: '$fileId', pending: { $sum: 1 } } },
+    ]);
+    const pendingByFile = new Map(
+      counts.map((c) => [c._id?.toString(), c.pending]),
+    );
+
+    return files.map((f) => {
+      const obj = f.toObject() as CampaignFileDocument & { pendingCount: number };
+      obj.pendingCount = pendingByFile.get(f._id.toString()) ?? 0;
+      return obj;
+    });
+  }
+
+  /** Delete a file and its not-yet-sent leads from a campaign. */
+  async deleteFile(
+    sessionId: string,
+    id: string,
+    fileId: string,
+  ): Promise<{ deletedLeads: number }> {
+    const campaign = await this.findOne(sessionId, id);
+    if (campaign.status === CampaignStatus.Running) {
+      throw new BadRequestException(
+        'Cannot delete files while the campaign is running.',
+      );
+    }
+    if (!Types.ObjectId.isValid(fileId)) {
+      throw new BadRequestException('Invalid file id.');
+    }
+    const file = await this.fileModel
+      .findOne({ _id: new Types.ObjectId(fileId), campaignId: campaign._id })
+      .exec();
+    if (!file) {
+      throw new NotFoundException('File not found in this campaign.');
+    }
+
+    // Only remove leads that haven't been sent (keep run history intact).
+    const res = await this.leadModel
+      .deleteMany({
+        fileId: file._id,
+        status: { $in: [LeadStatus.Pending, LeadStatus.Failed] },
+      })
+      .exec();
+    await this.fileModel.deleteOne({ _id: file._id }).exec();
+    await this.recountTotal(campaign._id);
+
+    this.logger.log(
+      `Campaign ${id}: deleted file "${file.originalName}" (${res.deletedCount ?? 0} leads).`,
+    );
+    return { deletedLeads: res.deletedCount ?? 0 };
   }
 
   /**
-   * The orchestration loop. Transitions the campaign to `running`, processes
-   * leads with a bounded worker pool (SEND_CONCURRENCY), updates per-lead status
-   * and campaign counters after each result, then marks the campaign completed.
+   * Start (or re-run) a campaign: enqueue every pending lead onto the shared
+   * BullMQ queue. Returns immediately — the backend processes the jobs across
+   * all replicas even if the frontend is closed.
    */
-  private async runCampaign(id: string): Promise<void> {
-    const campaign = await this.campaignModel.findById(id).exec();
-    if (!campaign) return;
-
-    if (campaign.totalLeads === 0) {
-      campaign.status = CampaignStatus.Completed;
-      campaign.startedAt = new Date();
-      campaign.completedAt = new Date();
-      await campaign.save();
-      this.logger.warn(`Campaign ${id} had no pending leads — completed empty.`);
-      return;
+  async start(sessionId: string, id: string): Promise<CampaignDocument> {
+    const campaign = await this.findOne(sessionId, id);
+    if (campaign.status === CampaignStatus.Running) {
+      throw new BadRequestException('Campaign is already running.');
     }
+
+    // Sending requires a configured SMTP account for this session.
+    await this.smtpAccounts.assertConfigured(sessionId);
+
+    const pending = await this.leadModel
+      .find({ campaignId: campaign._id, status: LeadStatus.Pending })
+      .select('_id')
+      .exec();
+    if (pending.length === 0) {
+      throw new BadRequestException('No pending leads to send. Add leads first.');
+    }
+
+    // Recompute counters from the DB so a re-run keeps already-sent leads
+    // counted and completion detection stays correct.
+    const [total, sent, failed] = await Promise.all([
+      this.leadModel.countDocuments({ campaignId: campaign._id }).exec(),
+      this.leadModel
+        .countDocuments({ campaignId: campaign._id, status: LeadStatus.Sent })
+        .exec(),
+      this.leadModel
+        .countDocuments({ campaignId: campaign._id, status: LeadStatus.Failed })
+        .exec(),
+    ]);
 
     campaign.status = CampaignStatus.Running;
+    campaign.totalLeads = total;
+    campaign.sentCount = sent;
+    campaign.failedCount = failed;
     campaign.startedAt = new Date();
+    campaign.completedAt = null;
     await campaign.save();
-    this.logger.log(
-      `▶ Campaign ${id} started — ${campaign.totalLeads} leads, concurrency ${this.concurrency}.`,
-    );
 
-    const leads = await this.leadModel
-      .find({ campaignId: new Types.ObjectId(id) })
-      .sort({ createdAt: 1 })
+    // Immediately reflect that these leads are in the pipeline. The worker then
+    // moves each one through `writing` → `sending` → `sent`/`failed`.
+    await this.leadModel
+      .updateMany(
+        { _id: { $in: pending.map((l) => l._id) } },
+        { $set: { status: LeadStatus.Queued, errorMessage: null } },
+      )
       .exec();
 
-    // Simple bounded worker pool: N workers pull from a shared index.
-    let cursor = 0;
-    const workerCount = Math.min(this.concurrency, leads.length);
+    const campaignId = campaign._id.toString();
+    await this.sendQueue.addBulk(
+      pending.map((l) => ({
+        name: 'send',
+        data: { campaignId, leadId: l._id.toString() },
+        opts: {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 2000 },
+          removeOnComplete: 1000,
+          removeOnFail: 1000,
+        },
+      })),
+    );
 
-    const worker = async (): Promise<void> => {
-      while (true) {
-        const index = cursor++;
-        if (index >= leads.length) return;
-        await this.processLead(leads[index], id);
-      }
-    };
-
-    try {
-      await Promise.all(Array.from({ length: workerCount }, () => worker()));
-
-      const fresh = await this.campaignModel.findById(id).exec();
-      if (fresh) {
-        fresh.status = CampaignStatus.Completed;
-        fresh.completedAt = new Date();
-        await fresh.save();
-        this.logger.log(
-          `■ Campaign ${id} completed — sent ${fresh.sentCount}, failed ${fresh.failedCount}.`,
-        );
-      }
-    } catch (err) {
-      const fresh = await this.campaignModel.findById(id).exec();
-      if (fresh) {
-        fresh.status = CampaignStatus.Failed;
-        fresh.completedAt = new Date();
-        await fresh.save();
-      }
-      this.logger.error(`Campaign ${id} failed: ${(err as Error)?.message}`);
-    }
+    this.logger.log(
+      `▶ Campaign ${campaignId} started — enqueued ${pending.length} jobs.`,
+    );
+    return campaign;
   }
 
-  /** Process a single lead: pending -> sending -> sent/failed, updating counters. */
-  private async processLead(lead: LeadDocument, campaignId: string): Promise<void> {
-    lead.status = LeadStatus.Sending;
-    lead.errorMessage = null;
-    await lead.save();
+  /** Leads belonging to a campaign, oldest first. */
+  async findLeads(sessionId: string, id: string): Promise<LeadDocument[]> {
+    const campaign = await this.findOne(sessionId, id);
+    return this.leadModel
+      .find({ campaignId: campaign._id })
+      .sort({ createdAt: 1 })
+      .limit(5000)
+      .exec();
+  }
 
-    const result = await this.emailSender.sendToLead(lead);
-
-    if (result.success) {
-      lead.status = LeadStatus.Sent;
-      lead.sentAt = new Date();
-      lead.errorMessage = null;
-      await lead.save();
-      await this.campaignModel.updateOne(
-        { _id: campaignId },
-        { $inc: { sentCount: 1 } },
-      );
-    } else {
-      lead.status = LeadStatus.Failed;
-      lead.errorMessage = result.error ?? 'Unknown error';
-      await lead.save();
-      await this.campaignModel.updateOne(
-        { _id: campaignId },
-        { $inc: { failedCount: 1 } },
-      );
+  /** Delete a campaign and all of its leads + files. Not allowed mid-run. */
+  async remove(sessionId: string, id: string): Promise<{ deleted: boolean }> {
+    const campaign = await this.findOne(sessionId, id);
+    if (campaign.status === CampaignStatus.Running) {
+      throw new BadRequestException('Cannot delete a running campaign.');
     }
+    await Promise.all([
+      this.leadModel.deleteMany({ campaignId: campaign._id }).exec(),
+      this.fileModel.deleteMany({ campaignId: campaign._id }).exec(),
+    ]);
+    await this.campaignModel.deleteOne({ _id: campaign._id }).exec();
+    this.logger.log(`Campaign ${id} deleted.`);
+    return { deleted: true };
+  }
+
+  /** Keep `totalLeads` in sync with the actual number of leads in the campaign. */
+  private async recountTotal(campaignId: Types.ObjectId): Promise<void> {
+    const total = await this.leadModel.countDocuments({ campaignId }).exec();
+    await this.campaignModel
+      .updateOne({ _id: campaignId }, { $set: { totalLeads: total } })
+      .exec();
   }
 }

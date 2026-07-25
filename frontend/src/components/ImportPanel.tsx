@@ -1,27 +1,28 @@
 import { useCallback, useRef, useState } from 'react';
 import { FileSpreadsheet, Loader2, Download, UploadCloud } from 'lucide-react';
-import { api } from '@/api/client';
 import { parseLeadFile } from '@/api/parse-file';
-import type { ImportResult, ParsedLead } from '@/api/types';
+import type { ParsedLead, UploadResult } from '@/api/types';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 
 interface Props {
-  onImported: (result: ImportResult) => void;
+  /** Uploads the chosen file (e.g. into a specific campaign). */
+  upload: (file: File) => Promise<UploadResult>;
+  onImported: (result: UploadResult) => void;
   onError: (message: string) => void;
   disabled?: boolean;
 }
 
 interface Preview {
-  fileName: string;
+  file: File;
   rows: ParsedLead[];
   skipped: number;
 }
 
 const ACCEPT = '.csv,.xlsx,.xls';
 
-export function ImportPanel({ onImported, onError, disabled }: Props) {
+export function ImportPanel({ upload, onImported, onError, disabled }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [parsing, setParsing] = useState(false);
@@ -40,7 +41,7 @@ export function ImportPanel({ onImported, onError, disabled }: Props) {
           );
           return;
         }
-        setPreview({ fileName: file.name, rows, skipped });
+        setPreview({ file, rows, skipped });
       } catch (e) {
         onError(e instanceof Error ? e.message : 'Failed to parse file');
       } finally {
@@ -65,16 +66,18 @@ export function ImportPanel({ onImported, onError, disabled }: Props) {
     if (!preview) return;
     setImporting(true);
     try {
-      const result = await api.importLeads(preview.rows);
+      // Upload the raw file so the backend records it against the campaign and
+      // stores its leads — the file can then be reviewed/deleted before sending.
+      const result = await upload(preview.file);
       setPreview(null);
       if (inputRef.current) inputRef.current.value = '';
       onImported(result);
     } catch (e) {
-      onError(e instanceof Error ? e.message : 'Import failed');
+      onError(e instanceof Error ? e.message : 'Upload failed');
     } finally {
       setImporting(false);
     }
-  }, [preview, onImported, onError]);
+  }, [preview, upload, onImported, onError]);
 
   // ── Preview ───────────────────────────────────────────────
   if (preview) {
@@ -85,7 +88,7 @@ export function ImportPanel({ onImported, onError, disabled }: Props) {
             <FileSpreadsheet className="h-6 w-6" />
           </div>
           <div className="min-w-0 flex-1">
-            <p className="truncate font-semibold">{preview.fileName}</p>
+            <p className="truncate font-semibold">{preview.file.name}</p>
             <div className="mt-1.5 flex flex-wrap items-center gap-2">
               <Badge variant="success">{preview.rows.length} valid leads</Badge>
               {preview.skipped > 0 && (

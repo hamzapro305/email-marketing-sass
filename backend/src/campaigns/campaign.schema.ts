@@ -15,6 +15,13 @@ export class Campaign {
   @Prop({ trim: true, default: '' })
   name: string;
 
+  // No email subject is stored — the AI writer generates a subject per lead.
+  @Prop({ trim: true, default: '' })
+  description: string;
+
+  @Prop({ type: String, default: null, index: true })
+  sessionId: string | null;
+
   @Prop({
     type: String,
     enum: Object.values(CampaignStatus),
