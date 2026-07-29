@@ -1,27 +1,20 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client';
-import type { Lead } from '../api/types';
+import { errMessage, qk } from '../api/query';
 
 /** Loads every lead in the session (across campaigns) for the Leads page. */
 export function useAllLeads() {
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const query = useQuery({
+    queryKey: qk.leads,
+    queryFn: () => api.listLeads(),
+  });
 
-  const refresh = useCallback(async () => {
-    setError(null);
-    try {
-      setLeads(await api.listLeads());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load leads');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  return { leads, loading, error, refresh };
+  return {
+    leads: query.data ?? [],
+    loading: query.isPending,
+    error: query.error ? errMessage(query.error, 'Failed to load leads') : null,
+    refresh: async () => {
+      await query.refetch();
+    },
+  };
 }

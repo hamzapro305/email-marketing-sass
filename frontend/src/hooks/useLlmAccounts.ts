@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client';
-import type { LlmAccount } from '../api/types';
+import { errMessage, qk } from '../api/query';
 
 /**
  * Loads the session's LLM providers (AI writer). When none are configured the
@@ -8,31 +8,21 @@ import type { LlmAccount } from '../api/types';
  * — it just tells the UI which model will write emails.
  */
 export function useLlmAccounts() {
-  const [accounts, setAccounts] = useState<LlmAccount[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const query = useQuery({
+    queryKey: qk.llmAccounts,
+    queryFn: () => api.listLlmAccounts(),
+  });
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setAccounts(await api.listLlmAccounts());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load LLM providers');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
+  const accounts = query.data ?? [];
   return {
     accounts,
     hasAny: accounts.length > 0,
-    loading,
-    error,
-    refresh,
+    loading: query.isPending,
+    error: query.error
+      ? errMessage(query.error, 'Failed to load LLM providers')
+      : null,
+    refresh: async () => {
+      await query.refetch();
+    },
   };
 }

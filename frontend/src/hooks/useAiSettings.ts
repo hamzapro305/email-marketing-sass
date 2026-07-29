@@ -1,28 +1,20 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client';
-import type { AiSettings } from '../api/types';
+import { errMessage, qk } from '../api/query';
 
 /** Loads the session's AI email-writing settings for the Settings page. */
 export function useAiSettings() {
-  const [settings, setSettings] = useState<AiSettings | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const query = useQuery({
+    queryKey: qk.aiSettings,
+    queryFn: () => api.getAiSettings(),
+  });
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setSettings(await api.getAiSettings());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load settings');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  return { settings, setSettings, loading, error, refresh };
+  return {
+    settings: query.data ?? null,
+    loading: query.isPending,
+    error: query.error ? errMessage(query.error, 'Failed to load settings') : null,
+    refresh: async () => {
+      await query.refetch();
+    },
+  };
 }

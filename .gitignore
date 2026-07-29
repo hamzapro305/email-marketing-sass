@@ -8,7 +8,8 @@ out/
 
 # Env files (never commit real secrets)
 .env
-backend/.env
+.env.dev
+.env.prod
 
 # Logs
 *.log

@@ -20,9 +20,18 @@ async function bootstrap() {
     }),
   );
 
+  // CORS. `*` (or unset) reflects any origin — fine for local/demo and for the
+  // packaged desktop app (which sends `Origin: null` / a file:// origin). In
+  // production set CORS_ORIGIN to a comma-separated allow-list.
   const corsOrigin = config.get<string>('app.corsOrigin') ?? '*';
   app.enableCors({
-    origin: corsOrigin === '*' ? true : corsOrigin.split(',').map((o) => o.trim()),
+    origin:
+      corsOrigin === '*'
+        ? true
+        : corsOrigin.split(',').map((o) => o.trim()).filter(Boolean),
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-session-id'],
+    credentials: false,
   });
 
   const port = config.get<number>('app.port') ?? 3000;

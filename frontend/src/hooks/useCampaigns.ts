@@ -1,27 +1,20 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client';
-import type { Campaign } from '../api/types';
+import { errMessage, qk } from '../api/query';
 
 /** Loads the session's campaigns for the list page. */
 export function useCampaigns() {
-  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const query = useQuery({
+    queryKey: qk.campaigns,
+    queryFn: () => api.listCampaigns(),
+  });
 
-  const refresh = useCallback(async () => {
-    setError(null);
-    try {
-      setCampaigns(await api.listCampaigns());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load campaigns');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  return { campaigns, setCampaigns, loading, error, refresh };
+  return {
+    campaigns: query.data ?? [],
+    loading: query.isPending,
+    error: query.error ? errMessage(query.error, 'Failed to load campaigns') : null,
+    refresh: async () => {
+      await query.refetch();
+    },
+  };
 }

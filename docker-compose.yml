@@ -1,36 +1,35 @@
-# Dev / demo infrastructure — horizontally-scaled email sender.
+# ─────────────────────────────────────────────────────────────
+# Base stack — shared by every environment.
 #
-# Architecture:
-#   nginx (load balancer, the only exposed port)
-#     └─> backend  ×N replicas   (REST API  +  BullMQ workers)
-#           ├─> mongo            (source of truth: leads, files, campaigns)
-#           └─> redis            (shared job queue → parallel sends across replicas)
+#   nginx (the ONLY published port)
+#     └─> backend ×N replicas   (REST API + BullMQ workers)
+#           ├─> mongo           (source of truth)
+#           ├─> redis           (shared job queue → parallel sends)
+#           └─> email-writer     (AI email sidecar)
 #
-# Whichever replica nginx routes the "start campaign" request to only *enqueues*
-# the work; Redis then hands the per-lead jobs to ALL replicas, so a 10k-lead
-# campaign is processed in parallel across every backend container.
+# By itself this file publishes nothing but nginx — mongo, redis and the
+# email-writer stay on the internal network. Compose in with an override for
+# your environment:
 #
-# Common workflow (run the app yourself, infra in Docker):
-#   docker compose up -d mongo redis
-#   # then run backend + frontend from your own terminal
+#   Dev :  docker compose -f docker-compose.yml -f docker-compose.dev.yml  up
+#   Prod:  docker compose -f docker-compose.yml -f docker-compose.prod.yml up
 #
-# Full stack in Docker:
-#   docker compose up --build                 # nginx + 3 backends + mongo + redis
-#   docker compose up --build --scale backend=5   # more replicas = more throughput
-#   docker compose down                       # stop
-#   docker compose down -v                    # stop + wipe data (fresh demo)
+# ...or just use the Makefile:  `make dev`  /  `make prod`.
+#
+# All tunables come from `.env` (the Makefile writes it from .env.dev/.env.prod).
+# ─────────────────────────────────────────────────────────────
 
 services:
   mongo:
     image: mongo:7
     restart: unless-stopped
     environment:
-      MONGO_INITDB_ROOT_USERNAME: root
-      MONGO_INITDB_ROOT_PASSWORD: example
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-example}
     volumes:
       - mongo-data:/data/db
-    ports:
-      - '27017:27017'
+    # No published ports here — only reachable inside the compose network.
+    # The dev override republishes 27017 for local tooling.
     healthcheck:
       test: ['CMD', 'mongosh', '--quiet', '--eval', "db.runCommand('ping').ok"]
       interval: 10s
@@ -44,8 +43,7 @@ services:
     command: ['redis-server', '--appendonly', 'yes']
     volumes:
       - redis-data:/data
-    ports:
-      - '6379:6379'
+    # Internal only — the dev override republishes 6379.
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 10s
@@ -53,37 +51,10 @@ services:
       retries: 5
       start_period: 10s
 
-  backend:
-    build:
-      context: ./backend
-    restart: unless-stopped
-    depends_on:
-      mongo:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      email-writer:
-        condition: service_healthy
-    env_file:
-      - ./backend/.env
-    # Inside the compose network the DB/queue hosts are the service names, so we
-    # override the connection env here. This keeps `.env` free to use localhost
-    # when running the backend directly on the host.
-    environment:
-      MONGO_URI: mongodb://root:example@mongo:27017/ems?authSource=admin
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      AI_WRITER_URL: http://email-writer:8000
-    # No published ports — traffic only reaches the backend through nginx.
-    expose:
-      - '3000'
-    deploy:
-      replicas: 3
-
   # Google ADK email-writing sidecar. Holds NO LLM credentials — the backend
-  # sends the user's chosen provider/model/key per request (from Settings → AI
-  # providers). With no LLM on a request it returns a local fallback email.
-  # `host.docker.internal` lets the app reach an Ollama running on the host.
+  # sends the user's chosen provider/model/key per request. With no LLM on a
+  # request it returns a local fallback email. `host.docker.internal` lets the
+  # app reach an Ollama running on the host.
   email-writer:
     build:
       context: ./ai-writer
@@ -103,6 +74,34 @@ services:
       retries: 5
       start_period: 20s
 
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      email-writer:
+        condition: service_healthy
+    # App-level config (ports, email mode, SMTP, CORS…) comes from .env.
+    env_file:
+      - ./.env
+    # Network-internal wiring: inside the compose network the DB/queue/AI hosts
+    # are the service names, so override the connection env here regardless of
+    # what .env says (which is written for host-side `npm run` usage).
+    environment:
+      MONGO_URI: mongodb://${MONGO_USER:-root}:${MONGO_PASSWORD:-example}@mongo:27017/ems?authSource=admin
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      AI_WRITER_URL: http://email-writer:8000
+    # No published ports — traffic only reaches the backend through nginx.
+    expose:
+      - '3000'
+    deploy:
+      replicas: ${BACKEND_REPLICAS:-3}
+
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
@@ -110,10 +109,9 @@ services:
       - backend
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    # nginx is the single entry point. Host :3000 keeps the frontend's default
-    # API URL (http://localhost:3000/api) working with no changes.
+    # The single public entry point. Host port comes from .env (NGINX_PORT).
     ports:
-      - '3000:80'
+      - '${NGINX_PORT:-3000}:80'
 
 volumes:
   mongo-data:

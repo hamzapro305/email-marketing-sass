@@ -16,10 +16,17 @@ import type {
 } from './types';
 import { getSessionId } from './session';
 
-// Backend base URL. Points at nginx (the load balancer) by default; override at
-// runtime by setting `window.__API_URL__` (e.g. from an Electron preload).
+// Backend base URL, resolved in priority order:
+//   1. `window.__API_URL__`      — runtime override (e.g. from an Electron preload)
+//   2. `import.meta.env.VITE_API_URL` — build-time value from the frontend .env file
+//   3. localhost fallback for a plain `npm run dev` with no configuration
+//
+// After deploying the containers to a server, set VITE_API_URL in the frontend
+// .env (see frontend/.env.example) to the server's nginx URL, e.g.
+// `https://mail.example.com/api`, and the desktop app will talk to it.
 const API_BASE =
   (globalThis as { __API_URL__?: string }).__API_URL__ ??
+  (import.meta.env.VITE_API_URL as string | undefined) ??
   'http://localhost:3000/api';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

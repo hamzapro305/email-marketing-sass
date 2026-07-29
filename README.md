@@ -67,7 +67,11 @@ tokens), so the dashboard is easy to extend. Add more with
 
 ```
 .
-├── docker-compose.yml     # nginx + backend×N + redis + mongo + email-writer
+├── Makefile               # `make dev` / `make prod` — writes .env, brings stack up
+├── docker-compose.yml     # base: nginx + backend×N + redis + mongo + email-writer
+├── docker-compose.dev.yml # dev override  — exposes Mongo/Redis, 1 backend
+├── docker-compose.prod.yml# prod override — only nginx exposed, restart:always
+├── .env.dev / .env.prod   # per-environment config; Makefile copies one to .env
 ├── nginx/nginx.conf       # load balancer → round-robins backend replicas
 ├── ai-writer/             # Google ADK (FastAPI) email-writer sidecar (live AI)
 ├── sample-leads.csv       # 15 demo leads for the walkthrough
@@ -83,8 +87,9 @@ tokens), so the dashboard is easy to extend. Add more with
 └── frontend/              # Electron desktop app (frontend only)
     ├── components.json    # shadcn/ui config
     └── src/
-        ├── api/           # typed API client + session id + local file parser
-        ├── hooks/         # useCampaigns, useCampaignDetail, useAllLeads, useLead…
+        ├── .env.example   # VITE_API_URL — backend URL the app talks to
+        ├── api/           # typed API client + React Query client/keys + session id
+        ├── hooks/         # React Query hooks: useCampaigns, useCampaignDetail, …
         ├── lib/           # cn() + formatting + in-app router (nav.ts)
         ├── components/
         │   ├── ui/        # shadcn primitives (button, card, table, dialog, …)
@@ -99,12 +104,31 @@ tokens), so the dashboard is easy to extend. Add more with
 
 ## Option A — full parallel stack in Docker (recommended)
 
-Brings up nginx + **3 backend replicas** + Redis + Mongo with one command:
+Two profiles, driven by a Makefile. Each run regenerates `.env` from the
+matching profile file (`.env.dev` / `.env.prod`), so `.env` always matches the
+environment you asked for:
 
 ```bash
-docker compose up --build                 # nginx on http://localhost:3000
-docker compose up --build --scale backend=5   # more replicas = more throughput
+make dev      # DEV : nginx :3000 + 1 backend, Mongo/Redis exposed for tooling
+make prod     # PROD: nginx :80 only, 3 backends, datastores NOT exposed
 ```
+
+Under the hood these compose the base file with an override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml  up --build -d
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+```
+
+Scale the worker pool on demand:
+
+```bash
+make up-prod BACKEND_REPLICAS=5   # more replicas = more throughput
+```
+
+**Port exposure:** in **prod only nginx is published** — Mongo (27017) and Redis
+(6379) stay on the internal network. The dev override republishes them purely
+for local debugging.
 
 Verify it's healthy (through nginx):
 
@@ -125,7 +149,7 @@ Useful for backend development. Runs one backend process (no cross-container
 parallelism, but the queue still works):
 
 ```bash
-docker compose up -d mongo redis     # Mongo + Redis only
+make dev                             # or: docker compose ... up -d mongo redis
 cd backend
 cp .env.example .env                 # first time only (localhost Mongo + Redis)
 npm install                          # first time only
@@ -136,12 +160,16 @@ npm run start:dev                    # NestJS API on http://localhost:3000
 
 ```bash
 cd frontend
-npm install        # first time only
-npm run dev        # launches the Electron desktop app
+cp .env.example .env   # first time only — sets VITE_API_URL (the backend URL)
+npm install            # first time only
+npm run dev            # launches the Electron desktop app
 ```
 
-The app points at `http://localhost:3000` (nginx, or the host backend) by
-default and generates its own session id on first launch.
+The backend URL is read from **`frontend/.env`** (`VITE_API_URL`), defaulting to
+`http://localhost:3000/api`. After deploying the containers to a server, point
+the app at it by setting e.g. `VITE_API_URL=https://mail.example.com/api` and
+rebuilding (`npm run make`) — no code changes needed. The app generates its own
+session id on first launch.
 
 ## 4. Run the demo
 
@@ -165,12 +193,13 @@ The app has two sections in the sidebar — **Campaigns** and **Leads**.
 ## Useful commands
 
 ```bash
-docker compose up --build              # full stack (nginx + backends + redis + mongo)
-docker compose up --build --scale backend=5   # scale the worker pool
-docker compose up -d mongo redis       # only infra (backend on host)
-docker compose down                    # stop + remove containers
-docker compose down -v                 # stop + WIPE data (fresh demo)
-docker compose logs -f backend         # follow all backend replicas
+make dev                       # DEV stack  (nginx :3000, Mongo/Redis exposed)
+make prod                      # PROD stack (nginx only)
+make up-prod BACKEND_REPLICAS=5   # scale the worker pool
+make down                      # stop + remove containers (keeps data)
+make clean                     # stop + WIPE data (fresh demo)
+make logs                      # follow logs from all services
+make help                      # list every target
 ```
 
 ## AI email writer (demo)

@@ -1,37 +1,27 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client';
-import type { SmtpAccount } from '../api/types';
+import { errMessage, qk } from '../api/query';
 
 /**
  * Loads the session's SMTP sending accounts. `hasAny` gates sending across the
  * app — campaigns can't be started until at least one account exists.
  */
 export function useSmtpAccounts() {
-  const [accounts, setAccounts] = useState<SmtpAccount[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const query = useQuery({
+    queryKey: qk.smtpAccounts,
+    queryFn: () => api.listSmtpAccounts(),
+  });
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setAccounts(await api.listSmtpAccounts());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load SMTP accounts');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
+  const accounts = query.data ?? [];
   return {
     accounts,
     hasAny: accounts.length > 0,
-    loading,
-    error,
-    refresh,
+    loading: query.isPending,
+    error: query.error
+      ? errMessage(query.error, 'Failed to load SMTP accounts')
+      : null,
+    refresh: async () => {
+      await query.refetch();
+    },
   };
 }
