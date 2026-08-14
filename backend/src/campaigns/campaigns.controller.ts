@@ -57,6 +57,7 @@ export class CampaignsController {
       file: result.file,
       imported: result.imported,
       skipped: result.skipped,
+      duplicates: result.duplicates,
     };
   }
 

@@ -31,7 +31,14 @@ const ROWS_PER_PAGE = 7;
 type Filter = 'all' | 'pending' | 'active' | 'sent' | 'failed';
 
 /** Live, in-flight run states grouped under a single "In progress" filter. */
-const ACTIVE_STATUSES: LeadStatus[] = ['queued', 'writing', 'sending'];
+const ACTIVE_STATUSES: LeadStatus[] = [
+  'queued',
+  'researching',
+  'analyzing',
+  'writing',
+  'ready',
+  'sending',
+];
 
 function LeadAvatar({ lead }: { lead: Lead }) {
   return (

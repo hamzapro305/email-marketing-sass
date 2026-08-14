@@ -7,14 +7,23 @@ import { SessionId } from '../common/session-id.decorator';
 export class LeadsController {
   constructor(private readonly leadsService: LeadsService) {}
 
-  /** All leads, each tagged with its campaign name. */
+  /** Paged leads, each tagged with its campaign name. */
   @Get()
   async list(
     @SessionId() sessionId: string,
     @Query('campaignId') campaignId?: string,
     @Query('status') status?: string,
+    @Query('q') q?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
   ) {
-    return this.leadsService.listAll(sessionId, { campaignId, status });
+    return this.leadsService.listAll(sessionId, {
+      campaignId,
+      status,
+      q,
+      page: page ? parseInt(page, 10) : undefined,
+      pageSize: pageSize ? parseInt(pageSize, 10) : undefined,
+    });
   }
 
   /** A single lead with campaign context. */

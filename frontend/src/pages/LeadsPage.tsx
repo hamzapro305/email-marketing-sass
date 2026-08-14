@@ -1,8 +1,7 @@
-import { useMemo } from 'react';
 import {
-  Users,
-  CheckCircle2,
   AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
   RefreshCw,
   Inbox,
 } from 'lucide-react';
@@ -11,7 +10,6 @@ import type { Route } from '@/lib/nav';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Header } from '@/components/layout/Header';
-import { StatCard } from '@/components/StatCard';
 import { LeadTable } from '@/components/LeadTable';
 
 interface Props {
@@ -21,17 +19,8 @@ interface Props {
 }
 
 export function LeadsPage({ isDark, onToggleTheme, navigate }: Props) {
-  const { leads, loading, error, refresh } = useAllLeads();
-
-  const stats = useMemo(() => {
-    let sent = 0;
-    let failed = 0;
-    for (const l of leads) {
-      if (l.status === 'sent') sent += 1;
-      else if (l.status === 'failed') failed += 1;
-    }
-    return { total: leads.length, sent, failed };
-  }, [leads]);
+  const { leads, total, page, totalPages, setPage, loading, error, refresh } =
+    useAllLeads();
 
   return (
     <>
@@ -47,7 +36,9 @@ export function LeadsPage({ isDark, onToggleTheme, navigate }: Props) {
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">Leads</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Every lead across all your campaigns. Click a row for details.
+              {total > 0
+                ? `${total.toLocaleString()} lead${total === 1 ? '' : 's'} across all campaigns. Click a row for its full audit.`
+                : 'Every lead across all your campaigns. Click a row for details.'}
             </p>
           </div>
           <Button
@@ -82,22 +73,42 @@ export function LeadsPage({ isDark, onToggleTheme, navigate }: Props) {
             </div>
           </Card>
         ) : (
-          <>
-            <div className="mb-6 grid grid-cols-3 gap-3">
-              <StatCard label="Total" value={stats.total} icon={Users} tone="primary" />
-              <StatCard label="Sent" value={stats.sent} icon={CheckCircle2} tone="success" />
-              <StatCard label="Failed" value={stats.failed} icon={AlertTriangle} tone="destructive" />
-            </div>
+          <Card className="p-5 sm:p-6">
+            <LeadTable
+              leads={leads}
+              loading={loading}
+              showCampaign
+              onRowClick={(lead) => navigate({ name: 'lead', id: lead._id })}
+            />
 
-            <Card className="p-5 sm:p-6">
-              <LeadTable
-                leads={leads}
-                loading={loading}
-                showCampaign
-                onRowClick={(lead) => navigate({ name: 'lead', id: lead._id })}
-              />
-            </Card>
-          </>
+            {totalPages > 1 && (
+              <div className="mt-4 flex items-center justify-between border-t pt-4 text-sm text-muted-foreground">
+                <span>
+                  Page {page} of {totalPages}
+                </span>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={page <= 1 || loading}
+                    onClick={() => setPage(page - 1)}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={page >= totalPages || loading}
+                    onClick={() => setPage(page + 1)}
+                  >
+                    Next
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            )}
+          </Card>
         )}
       </main>
     </>

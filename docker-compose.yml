@@ -1,23 +1,46 @@
 # ─────────────────────────────────────────────────────────────
 # Base stack — shared by every environment.
 #
-#   nginx (the ONLY published port)
-#     └─> backend ×N replicas   (REST API + BullMQ workers)
-#           ├─> mongo           (source of truth)
-#           ├─> redis           (shared job queue → parallel sends)
-#           └─> email-writer     (AI email sidecar)
+#   gateway  (nginx: serves the React SPA + proxies /api — the ONLY published port)
+#     └─> api ×N        (NestJS, APP_ROLE=api — HTTP only, enqueues work)
+#           ├─> mongo   (source of truth: leads, audits, campaigns, caches)
+#           ├─> redis   (BullMQ queues + cross-replica coordination)
+#           └─> ai-service (Google ADK agents: research/rivals/analysis/email)
+#   worker ×N           (same image, APP_ROLE=worker — runs the audit pipeline
+#                        + send queues; scale THIS for throughput)
 #
-# By itself this file publishes nothing but nginx — mongo, redis and the
-# email-writer stay on the internal network. Compose in with an override for
-# your environment:
-#
+# Compose in an override for your environment:
 #   Dev :  docker compose -f docker-compose.yml -f docker-compose.dev.yml  up
 #   Prod:  docker compose -f docker-compose.yml -f docker-compose.prod.yml up
-#
 # ...or just use the Makefile:  `make dev`  /  `make prod`.
 #
 # All tunables come from `.env` (the Makefile writes it from .env.dev/.env.prod).
 # ─────────────────────────────────────────────────────────────
+
+x-backend-base: &backend-base
+  build:
+    context: ./backend
+  restart: unless-stopped
+  env_file:
+    - ./.env
+  # Network-internal wiring: inside the compose network the DB/queue/AI hosts
+  # are the service names, so override the connection env here regardless of
+  # what .env says (which is written for host-side `npm run` usage).
+  environment: &backend-env
+    MONGO_URI: mongodb://${MONGO_USER:-root}:${MONGO_PASSWORD:-example}@mongo:27017/ems?authSource=admin
+    REDIS_HOST: redis
+    REDIS_PORT: 6379
+    AI_SERVICE_URL: http://ai-service:8000
+  healthcheck:
+    test:
+      - CMD
+      - node
+      - -e
+      - "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+    interval: 15s
+    timeout: 5s
+    retries: 5
+    start_period: 30s
 
 services:
   mongo:
@@ -51,16 +74,15 @@ services:
       retries: 5
       start_period: 10s
 
-  # Google ADK email-writing sidecar. Holds NO LLM credentials — the backend
-  # sends the user's chosen provider/model/key per request. With no LLM on a
-  # request it returns a local fallback email. `host.docker.internal` lets the
-  # app reach an Ollama running on the host.
-  email-writer:
+  # Google ADK agents (research / rivals / analysis / email). Holds NO LLM
+  # credentials — the backend forwards the user's configured provider/model/key
+  # per request; with none it returns deterministic fallbacks.
+  ai-service:
     build:
-      context: ./ai-writer
+      context: ./ai-service
     restart: unless-stopped
     extra_hosts:
-      - 'host.docker.internal:host-gateway'
+      - 'host.docker.internal:host-gateway' # lets it reach an Ollama on the host
     expose:
       - '8000'
     healthcheck:
@@ -69,49 +91,61 @@ services:
         - python
         - -c
         - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"
-      interval: 10s
+      interval: 15s
       timeout: 5s
       retries: 5
       start_period: 20s
 
-  backend:
-    build:
-      context: ./backend
-    restart: unless-stopped
+  # HTTP-only backend: serves the REST API, enqueues pipeline/send jobs.
+  api:
+    <<: *backend-base
+    environment:
+      <<: *backend-env
+      APP_ROLE: api
     depends_on:
       mongo:
         condition: service_healthy
       redis:
         condition: service_healthy
-      email-writer:
-        condition: service_healthy
-    # App-level config (ports, email mode, SMTP, CORS…) comes from .env.
-    env_file:
-      - ./.env
-    # Network-internal wiring: inside the compose network the DB/queue/AI hosts
-    # are the service names, so override the connection env here regardless of
-    # what .env says (which is written for host-side `npm run` usage).
-    environment:
-      MONGO_URI: mongodb://${MONGO_USER:-root}:${MONGO_PASSWORD:-example}@mongo:27017/ems?authSource=admin
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      AI_WRITER_URL: http://email-writer:8000
-    # No published ports — traffic only reaches the backend through nginx.
     expose:
       - '3000'
     deploy:
-      replicas: ${BACKEND_REPLICAS:-3}
+      replicas: ${API_REPLICAS:-2}
 
-  nginx:
-    image: nginx:1.27-alpine
+  # Queue consumers: audit pipeline (research/scrape/analyze/email) + sending.
+  # Scale THIS service for throughput — it does the heavy lifting.
+  worker:
+    <<: *backend-base
+    environment:
+      <<: *backend-env
+      APP_ROLE: worker
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ai-service:
+        condition: service_healthy
+    expose:
+      - '3000' # health endpoint only — no external traffic is routed here
+    deploy:
+      replicas: ${WORKER_REPLICAS:-3}
+
+  # The single public entry point: static SPA + /api reverse proxy.
+  gateway:
+    build:
+      context: ./frontend
     restart: unless-stopped
     depends_on:
-      - backend
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    # The single public entry point. Host port comes from .env (NGINX_PORT).
+      - api
     ports:
-      - '${NGINX_PORT:-3000}:80'
+      - '${GATEWAY_PORT:-3000}:80'
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '--spider', 'http://localhost:80/']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   mongo-data:

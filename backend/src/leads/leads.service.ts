@@ -11,9 +11,17 @@ export interface LeadWithCampaign {
   lastName: string;
   company: string;
   title: string;
+  website: string;
+  phone: string;
+  industry: string;
+  location: string;
+  linkedinUrl: string;
+  companyDomain: string;
   status: string;
   errorMessage: string | null;
   sentAt: Date | null;
+  generatedSubject?: string | null;
+  generatedBody?: string | null;
   campaignId: Types.ObjectId | null;
   campaignName: string | null;
   sessionId: string | null;
@@ -21,44 +29,80 @@ export interface LeadWithCampaign {
   updatedAt: Date;
 }
 
+export interface PagedLeads {
+  items: LeadWithCampaign[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+const MAX_PAGE_SIZE = 200;
+
 @Injectable()
 export class LeadsService {
   constructor(
     @InjectModel(Lead.name) private readonly leadModel: Model<LeadDocument>,
   ) {}
 
-  /** All leads for a session, newest activity first, each with its campaign name. */
+  /**
+   * Paged leads for a session, newest activity first. The campaign name is
+   * joined only for the returned page, so listing stays fast at 10k+ leads.
+   */
   async listAll(
     sessionId: string,
-    opts: { campaignId?: string; status?: string } = {},
-  ): Promise<LeadWithCampaign[]> {
+    opts: {
+      campaignId?: string;
+      status?: string;
+      q?: string;
+      page?: number;
+      pageSize?: number;
+    } = {},
+  ): Promise<PagedLeads> {
     const match: Record<string, unknown> = { sessionId };
     if (opts.campaignId && Types.ObjectId.isValid(opts.campaignId)) {
       match.campaignId = new Types.ObjectId(opts.campaignId);
     }
     if (opts.status) match.status = opts.status;
+    if (opts.q?.trim()) {
+      const q = opts.q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      match.$or = [
+        { email: { $regex: q, $options: 'i' } },
+        { company: { $regex: q, $options: 'i' } },
+        { firstName: { $regex: q, $options: 'i' } },
+        { lastName: { $regex: q, $options: 'i' } },
+      ];
+    }
 
-    return this.leadModel.aggregate<LeadWithCampaign>([
-      { $match: match },
-      { $sort: { updatedAt: -1 } },
-      { $limit: 5000 },
-      {
-        $lookup: {
-          from: 'campaigns',
-          localField: 'campaignId',
-          foreignField: '_id',
-          as: 'campaign',
-        },
-      },
-      {
-        $addFields: {
-          campaignName: {
-            $ifNull: [{ $arrayElemAt: ['$campaign.name', 0] }, null],
+    const page = Math.max(1, opts.page ?? 1);
+    const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, opts.pageSize ?? 50));
+
+    const [items, total] = await Promise.all([
+      this.leadModel.aggregate<LeadWithCampaign>([
+        { $match: match },
+        { $sort: { updatedAt: -1, _id: -1 } },
+        { $skip: (page - 1) * pageSize },
+        { $limit: pageSize },
+        {
+          $lookup: {
+            from: 'campaigns',
+            localField: 'campaignId',
+            foreignField: '_id',
+            as: 'campaign',
           },
         },
-      },
-      { $project: { campaign: 0, __v: 0 } },
+        {
+          $addFields: {
+            campaignName: {
+              $ifNull: [{ $arrayElemAt: ['$campaign.name', 0] }, null],
+            },
+          },
+        },
+        { $project: { campaign: 0, __v: 0, generatedBody: 0 } },
+      ]),
+      this.leadModel.countDocuments(match).exec(),
     ]);
+
+    return { items, total, page, pageSize };
   }
 
   /** A single lead with its campaign name. */

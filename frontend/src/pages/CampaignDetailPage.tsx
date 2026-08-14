@@ -66,7 +66,8 @@ export function CampaignDetailPage({ id, isDark, onToggleTheme, navigate }: Prop
       toast.success('Leads added', {
         description:
           `${result.imported} leads` +
-          (result.skipped > 0 ? ` · ${result.skipped} skipped` : ''),
+          (result.skipped > 0 ? ` · ${result.skipped} skipped` : '') +
+          (result.duplicates > 0 ? ` · ${result.duplicates} duplicates` : ''),
       });
       void refresh();
     },

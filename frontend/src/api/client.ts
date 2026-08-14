@@ -6,6 +6,8 @@ import type {
   ComposedEmail,
   CreateCampaignInput,
   Lead,
+  LeadAudit,
+  PagedLeads,
   LlmAccount,
   LlmAccountInput,
   LlmTestResult,
@@ -16,18 +18,10 @@ import type {
 } from './types';
 import { getSessionId } from './session';
 
-// Backend base URL, resolved in priority order:
-//   1. `window.__API_URL__`      — runtime override (e.g. from an Electron preload)
-//   2. `import.meta.env.VITE_API_URL` — build-time value from the frontend .env file
-//   3. localhost fallback for a plain `npm run dev` with no configuration
-//
-// After deploying the containers to a server, set VITE_API_URL in the frontend
-// .env (see frontend/.env.example) to the server's nginx URL, e.g.
-// `https://mail.example.com/api`, and the desktop app will talk to it.
-const API_BASE =
-  (globalThis as { __API_URL__?: string }).__API_URL__ ??
-  (import.meta.env.VITE_API_URL as string | undefined) ??
-  'http://localhost:3000/api';
+// Backend base URL. The SPA is served by the same nginx that proxies /api to
+// the backend, so a relative "/api" works everywhere (the Vite dev server
+// proxies it too). VITE_API_URL overrides it for cross-origin setups.
+const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? '/api';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const isForm = init?.body instanceof FormData;
@@ -122,16 +116,39 @@ export const api = {
   },
 
   // ── Leads (across all campaigns) ─────────────────────────────
-  listLeads(opts: { campaignId?: string; status?: string } = {}): Promise<Lead[]> {
+  listLeads(
+    opts: {
+      campaignId?: string;
+      status?: string;
+      q?: string;
+      page?: number;
+      pageSize?: number;
+    } = {},
+  ): Promise<PagedLeads> {
     const qs = new URLSearchParams();
     if (opts.campaignId) qs.set('campaignId', opts.campaignId);
     if (opts.status) qs.set('status', opts.status);
+    if (opts.q) qs.set('q', opts.q);
+    if (opts.page) qs.set('page', String(opts.page));
+    if (opts.pageSize) qs.set('pageSize', String(opts.pageSize));
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
-    return request<Lead[]>(`/leads${suffix}`);
+    return request<PagedLeads>(`/leads${suffix}`);
   },
 
   getLead(id: string): Promise<Lead> {
     return request<Lead>(`/leads/${id}`);
+  },
+
+  // ── Lead audits (research pipeline output) ───────────────────
+  getLeadAudit(id: string): Promise<LeadAudit> {
+    return request<LeadAudit>(`/leads/${id}/audit`);
+  },
+
+  /** Run (or re-run) the audit pipeline for one lead — nothing is sent. */
+  runLeadAudit(id: string): Promise<{ runId: string; leadId: string }> {
+    return request<{ runId: string; leadId: string }>(`/leads/${id}/audit`, {
+      method: 'POST',
+    });
   },
 
   // ── AI settings (email writer) ───────────────────────────────

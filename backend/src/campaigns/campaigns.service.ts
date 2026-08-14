@@ -4,20 +4,15 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectQueue } from '@nestjs/bullmq';
 import { InjectModel } from '@nestjs/mongoose';
-import { Queue } from 'bullmq';
 import { Model, Types } from 'mongoose';
 import { Campaign, CampaignDocument, CampaignStatus } from './campaign.schema';
-import {
-  CampaignFile,
-  CampaignFileDocument,
-} from './campaign-file.schema';
+import { CampaignFile, CampaignFileDocument } from './campaign-file.schema';
 import { Lead, LeadDocument, LeadStatus } from '../leads/lead.schema';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
-import { SEND_QUEUE, SendJobData } from './queue.constants';
 import { parseFile } from '../leads/lead-parser';
 import { SmtpAccountsService } from '../smtp-accounts/smtp-accounts.service';
+import { PipelineService } from '../pipeline/pipeline.service';
 
 export interface UploadedFileType {
   originalname: string;
@@ -25,6 +20,8 @@ export interface UploadedFileType {
   size: number;
   buffer: Buffer;
 }
+
+const INSERT_CHUNK = 2_000;
 
 @Injectable()
 export class CampaignsService {
@@ -37,8 +34,8 @@ export class CampaignsService {
     private readonly fileModel: Model<CampaignFileDocument>,
     @InjectModel(Lead.name)
     private readonly leadModel: Model<LeadDocument>,
-    @InjectQueue(SEND_QUEUE) private readonly sendQueue: Queue<SendJobData>,
     private readonly smtpAccounts: SmtpAccountsService,
+    private readonly pipeline: PipelineService,
   ) {}
 
   /** Create a campaign as a draft — no leads yet, nothing sent. */
@@ -85,14 +82,21 @@ export class CampaignsService {
   }
 
   /**
-   * Upload a CSV/XLSX into a campaign: parse it, record the file, and store its
-   * rows as `pending` leads attached to the campaign. Not allowed mid-run.
+   * Upload a CSV/XLSX into a campaign: parse, validate, normalize, and store
+   * rows as `pending` leads. Deduplication is two-layered: within the file
+   * (parser drops repeated emails) and against the campaign (a unique index on
+   * campaignId+email makes `insertMany` skip rows that already exist).
    */
   async uploadLeads(
     sessionId: string,
     id: string,
     file: UploadedFileType,
-  ): Promise<{ file: CampaignFileDocument; imported: number; skipped: number }> {
+  ): Promise<{
+    file: CampaignFileDocument;
+    imported: number;
+    skipped: number;
+    duplicates: number;
+  }> {
     const campaign = await this.findOne(sessionId, id);
     if (campaign.status === CampaignStatus.Running) {
       throw new BadRequestException(
@@ -103,7 +107,7 @@ export class CampaignsService {
       throw new BadRequestException('No file provided (field name must be "file").');
     }
 
-    const { rows, skipped } = parseFile(
+    const { rows, skipped, duplicates: fileDuplicates } = parseFile(
       file.originalname,
       file.mimetype,
       file.buffer,
@@ -118,34 +122,50 @@ export class CampaignsService {
       skipped,
     });
 
-    if (rows.length > 0) {
-      const CHUNK = 2000;
-      for (let i = 0; i < rows.length; i += CHUNK) {
-        const chunk = rows.slice(i, i + CHUNK).map((row) => ({
-          email: row.email,
-          firstName: row.firstName,
-          lastName: row.lastName,
-          company: row.company,
-          title: row.title,
-          status: LeadStatus.Pending,
-          errorMessage: null,
-          sentAt: null,
-          campaignId: campaign._id,
-          sessionId,
-          fileId: fileDoc._id,
-        }));
-        await this.leadModel.insertMany(chunk, { ordered: false });
+    let inserted = 0;
+    let dbDuplicates = 0;
+    for (let i = 0; i < rows.length; i += INSERT_CHUNK) {
+      const chunk = rows.slice(i, i + INSERT_CHUNK).map((row) => ({
+        ...row,
+        status: LeadStatus.Pending,
+        errorMessage: null,
+        sentAt: null,
+        campaignId: campaign._id,
+        sessionId,
+        fileId: fileDoc._id,
+      }));
+      try {
+        const docs = await this.leadModel.insertMany(chunk, { ordered: false });
+        inserted += docs.length;
+      } catch (err) {
+        // Duplicate-key errors are expected (lead already in this campaign);
+        // with ordered:false everything else in the batch was still inserted.
+        const bulkErr = err as {
+          code?: number;
+          message?: string;
+          insertedDocs?: unknown[];
+          result?: { insertedCount?: number };
+        };
+        const isDuplicateError =
+          bulkErr.code === 11000 || /E11000/.test(bulkErr.message ?? '');
+        if (!isDuplicateError) throw err;
+        const okCount =
+          bulkErr.result?.insertedCount ?? bulkErr.insertedDocs?.length ?? 0;
+        inserted += okCount;
+        dbDuplicates += chunk.length - okCount;
       }
     }
 
-    fileDoc.leadCount = rows.length;
+    fileDoc.leadCount = inserted;
     await fileDoc.save();
     await this.recountTotal(campaign._id);
 
+    const duplicates = fileDuplicates + dbDuplicates;
     this.logger.log(
-      `Campaign ${id}: added "${file.originalname}" — ${rows.length} leads (skipped ${skipped}).`,
+      `Campaign ${id}: added "${file.originalname}" — ${inserted} leads ` +
+        `(skipped ${skipped} invalid, ${duplicates} duplicates).`,
     );
-    return { file: fileDoc, imported: rows.length, skipped };
+    return { file: fileDoc, imported: inserted, skipped, duplicates };
   }
 
   /** Files uploaded to a campaign, newest first, with live pending counts. */
@@ -208,7 +228,7 @@ export class CampaignsService {
     const res = await this.leadModel
       .deleteMany({
         fileId: file._id,
-        status: { $in: [LeadStatus.Pending, LeadStatus.Failed] },
+        status: { $in: [LeadStatus.Pending, LeadStatus.Failed, LeadStatus.Ready] },
       })
       .exec();
     await this.fileModel.deleteOne({ _id: file._id }).exec();
@@ -221,9 +241,10 @@ export class CampaignsService {
   }
 
   /**
-   * Start (or re-run) a campaign: enqueue every pending lead onto the shared
-   * BullMQ queue. Returns immediately — the backend processes the jobs across
-   * all replicas even if the frontend is closed.
+   * Start (or re-run) a campaign: every pending lead enters the audit pipeline
+   * (research → rivals → scraping → analysis → email), and each finished audit
+   * hands its lead to the send queue. Returns immediately — the workers process
+   * everything even if the frontend is closed.
    */
   async start(sessionId: string, id: string): Promise<CampaignDocument> {
     const campaign = await this.findOne(sessionId, id);
@@ -234,59 +255,59 @@ export class CampaignsService {
     // Sending requires a configured SMTP account for this session.
     await this.smtpAccounts.assertConfigured(sessionId);
 
-    const pending = await this.leadModel
-      .find({ campaignId: campaign._id, status: LeadStatus.Pending })
-      .select('_id')
+    // A re-run gives previously-failed (and audited-but-unsent) leads a fresh
+    // pass; already-sent leads are never re-sent.
+    await this.leadModel
+      .updateMany(
+        {
+          campaignId: campaign._id,
+          status: { $in: [LeadStatus.Failed, LeadStatus.Ready] },
+        },
+        { $set: { status: LeadStatus.Pending, errorMessage: null } },
+      )
       .exec();
-    if (pending.length === 0) {
+
+    const toRun = await this.leadModel
+      .find({ campaignId: campaign._id, status: LeadStatus.Pending })
+      .select('_id campaignId sessionId')
+      .lean()
+      .exec();
+    if (toRun.length === 0) {
       throw new BadRequestException('No pending leads to send. Add leads first.');
     }
 
     // Recompute counters from the DB so a re-run keeps already-sent leads
     // counted and completion detection stays correct.
-    const [total, sent, failed] = await Promise.all([
+    const [total, sent] = await Promise.all([
       this.leadModel.countDocuments({ campaignId: campaign._id }).exec(),
       this.leadModel
         .countDocuments({ campaignId: campaign._id, status: LeadStatus.Sent })
-        .exec(),
-      this.leadModel
-        .countDocuments({ campaignId: campaign._id, status: LeadStatus.Failed })
         .exec(),
     ]);
 
     campaign.status = CampaignStatus.Running;
     campaign.totalLeads = total;
     campaign.sentCount = sent;
-    campaign.failedCount = failed;
+    campaign.failedCount = 0;
     campaign.startedAt = new Date();
     campaign.completedAt = null;
     await campaign.save();
 
-    // Immediately reflect that these leads are in the pipeline. The worker then
-    // moves each one through `writing` → `sending` → `sent`/`failed`.
+    // Immediately reflect that these leads are in the pipeline. Workers then
+    // move each one through researching → analyzing → writing → sending.
     await this.leadModel
       .updateMany(
-        { _id: { $in: pending.map((l) => l._id) } },
+        { _id: { $in: toRun.map((l) => l._id) } },
         { $set: { status: LeadStatus.Queued, errorMessage: null } },
       )
       .exec();
 
-    const campaignId = campaign._id.toString();
-    await this.sendQueue.addBulk(
-      pending.map((l) => ({
-        name: 'send',
-        data: { campaignId, leadId: l._id.toString() },
-        opts: {
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 2000 },
-          removeOnComplete: 1000,
-          removeOnFail: 1000,
-        },
-      })),
-    );
-
-    this.logger.log(
-      `▶ Campaign ${campaignId} started — enqueued ${pending.length} jobs.`,
+    const runId = new Types.ObjectId().toString();
+    await this.pipeline.startForCampaign(
+      campaign._id.toString(),
+      sessionId,
+      toRun as Array<Pick<LeadDocument, '_id' | 'campaignId' | 'sessionId'>>,
+      runId,
     );
     return campaign;
   }

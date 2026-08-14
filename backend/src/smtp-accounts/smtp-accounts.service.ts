@@ -9,6 +9,7 @@ import { Model, Types } from 'mongoose';
 import { SmtpAccount, SmtpAccountDocument } from './smtp-account.schema';
 import { CreateSmtpAccountDto } from './dto/create-smtp-account.dto';
 import { UpdateSmtpAccountDto } from './dto/update-smtp-account.dto';
+import { CryptoService, normalizeSecret } from '../common/crypto.service';
 
 /** Full SMTP config (incl. password) used internally by the mail sender. */
 export interface ResolvedSmtpConfig {
@@ -28,6 +29,7 @@ export class SmtpAccountsService {
   constructor(
     @InjectModel(SmtpAccount.name)
     private readonly model: Model<SmtpAccountDocument>,
+    private readonly crypto: CryptoService,
   ) {}
 
   /** Accounts for a session, default first, with passwords masked. */
@@ -65,7 +67,8 @@ export class SmtpAccountsService {
       port: dto.port,
       secure: dto.secure ?? false,
       user: dto.user.trim(),
-      pass: dto.pass,
+      // Normalized (App-Password spacing stripped) and encrypted at rest.
+      pass: this.crypto.encrypt(normalizeSecret(dto.pass)),
       fromName: dto.fromName?.trim() ?? '',
       fromEmail: dto.fromEmail?.trim() ?? '',
       isDefault: makeDefault,
@@ -93,7 +96,7 @@ export class SmtpAccountsService {
     if (dto.fromName !== undefined) doc.fromName = dto.fromName.trim();
     if (dto.fromEmail !== undefined) doc.fromEmail = dto.fromEmail.trim();
     // Blank password means "keep the stored one".
-    if (dto.pass) doc.pass = dto.pass;
+    if (dto.pass) doc.pass = this.crypto.encrypt(normalizeSecret(dto.pass));
 
     // Promoting to default demotes the others; you cannot un-default directly
     // (set another account as default instead).
@@ -170,7 +173,9 @@ export class SmtpAccountsService {
       port: doc.port,
       secure: doc.secure,
       user: doc.user,
-      pass: doc.pass,
+      // Decrypted for use; legacy plaintext rows pass through and are also
+      // normalized, so an app password saved earlier with spaces now works.
+      pass: normalizeSecret(this.crypto.decrypt(doc.pass)),
       from,
     };
   }

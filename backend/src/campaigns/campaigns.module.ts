@@ -1,17 +1,24 @@
 import { Module } from '@nestjs/common';
-import { BullModule } from '@nestjs/bullmq';
 import { MongooseModule } from '@nestjs/mongoose';
 import { Campaign, CampaignSchema } from './campaign.schema';
 import { CampaignFile, CampaignFileSchema } from './campaign-file.schema';
 import { CampaignsService } from './campaigns.service';
 import { CampaignsController } from './campaigns.controller';
 import { SendProcessor } from './send.processor';
-import { SEND_QUEUE } from './queue.constants';
 import { LeadsModule } from '../leads/leads.module';
 import { EmailAgentModule } from '../email-agent/email-agent.module';
-import { EmailWriterModule } from '../email-writer/email-writer.module';
 import { SettingsModule } from '../settings/settings.module';
 import { SmtpAccountsModule } from '../smtp-accounts/smtp-accounts.module';
+import { PipelineModule } from '../pipeline/pipeline.module';
+import { AiModule } from '../ai/ai.module';
+import { SuppressionsModule } from '../suppressions/suppressions.module';
+
+/**
+ * Campaign CRUD + file uploads + the send worker. Starting a campaign hands
+ * its leads to the audit pipeline (PipelineModule); the SendProcessor here
+ * consumes the send queue that the pipeline's final stage feeds.
+ */
+const isWorkerProcess = (process.env.APP_ROLE ?? 'all') !== 'api';
 
 @Module({
   imports: [
@@ -19,14 +26,15 @@ import { SmtpAccountsModule } from '../smtp-accounts/smtp-accounts.module';
       { name: Campaign.name, schema: CampaignSchema },
       { name: CampaignFile.name, schema: CampaignFileSchema },
     ]),
-    BullModule.registerQueue({ name: SEND_QUEUE }),
     LeadsModule,
     EmailAgentModule,
-    EmailWriterModule,
     SettingsModule,
     SmtpAccountsModule,
+    PipelineModule,
+    AiModule,
+    SuppressionsModule,
   ],
   controllers: [CampaignsController],
-  providers: [CampaignsService, SendProcessor],
+  providers: [CampaignsService, ...(isWorkerProcess ? [SendProcessor] : [])],
 })
 export class CampaignsModule {}

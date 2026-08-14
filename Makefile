@@ -27,15 +27,15 @@ env-prod: ## Write .env from .env.prod
 	@cp .env.prod .env
 	@echo "→ .env is now the PROD profile"
 
-dev: env-dev ## Build + start the DEV stack (mongo/redis exposed, 1 backend)
+dev: env-dev ## Build + start the DEV stack (mongo/redis exposed, 1 api + 1 worker)
 	$(COMPOSE) $(DEV) up --build -d
-	@echo "→ App: http://localhost:$$(grep -E '^NGINX_PORT=' .env | cut -d= -f2)/api"
+	@echo "→ App: http://localhost:$$(grep -E '^GATEWAY_PORT=' .env | cut -d= -f2 | cut -d' ' -f1)"
 
-prod: env-prod ## Build + start the PROD stack (only nginx exposed)
+prod: env-prod ## Build + start the PROD stack (only the gateway exposed)
 	$(COMPOSE) $(PROD) up --build -d
-	@echo "→ App: http://<server>:$$(grep -E '^NGINX_PORT=' .env | cut -d= -f2)/api"
+	@echo "→ App: http://<server>:$$(grep -E '^GATEWAY_PORT=' .env | cut -d= -f2 | cut -d' ' -f1)"
 
-# Scale on demand, e.g.  make up-prod BACKEND_REPLICAS=5
+# Scale on demand, e.g.  make up-prod WORKER_REPLICAS=6
 up-dev: env-dev ## Start DEV without rebuilding
 	$(COMPOSE) $(DEV) up -d
 
@@ -54,5 +54,5 @@ ps: ## Show running services
 build: ## Build images only
 	$(COMPOSE) $(BASE) build
 
-clean: ## Stop the stack AND wipe volumes (fresh demo)
+clean: ## Stop the stack AND wipe volumes (fresh start)
 	$(COMPOSE) $(BASE) down -v

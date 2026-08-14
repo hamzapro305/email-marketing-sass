@@ -2,7 +2,9 @@ import { Body, Controller, Get, Post, Put } from '@nestjs/common';
 import { SettingsService } from './settings.service';
 import { UpdateAiSettingsDto } from './dto/update-ai-settings.dto';
 import { SessionId } from '../common/session-id.decorator';
-import { EmailWriterService } from '../email-writer/email-writer.service';
+import { EmailComposeService } from '../ai/email-compose.service';
+import { LlmAccountsService } from '../llm-accounts/llm-accounts.service';
+import { LlmWirePayload } from '../ai/ai.types';
 
 /** Sample lead used for the Settings "preview" so users can test their config. */
 const SAMPLE_LEAD = {
@@ -17,7 +19,8 @@ const SAMPLE_LEAD = {
 export class SettingsController {
   constructor(
     private readonly settingsService: SettingsService,
-    private readonly writer: EmailWriterService,
+    private readonly emailCompose: EmailComposeService,
+    private readonly llmAccounts: LlmAccountsService,
   ) {}
 
   /** Current AI settings (API key masked). */
@@ -39,18 +42,21 @@ export class SettingsController {
   @Post('ai/preview')
   async preview(
     @SessionId() sessionId: string,
-    @Body() body: { subject?: string; description?: string } = {},
+    @Body() body: { description?: string } = {},
   ) {
     const settings = await this.settingsService.getForSession(sessionId);
-    return this.writer.compose({
-      sessionId,
+    const llmConfig = await this.llmAccounts.getDefaultConfig(sessionId);
+    return this.emailCompose.compose({
       lead: SAMPLE_LEAD,
       campaign: {
         name: 'Sample campaign',
-        subject: body.subject,
         description: body.description,
       },
       settings,
+      audit: null,
+      llm: llmConfig
+        ? (this.llmAccounts.toWirePayload(llmConfig) as unknown as LlmWirePayload)
+        : undefined,
     });
   }
 }

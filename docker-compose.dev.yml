@@ -2,8 +2,8 @@
 # Dev override — convenience for local development.
 #
 # Publishes Mongo and Redis to the host so you can inspect them with local
-# tools (Compass, redis-cli), and runs a single backend replica for simpler
-# logs. Compose it on top of the base file:
+# tools (Compass, redis-cli), and runs a single api + worker replica for
+# simpler logs. Compose it on top of the base file:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 #   # or: make dev
@@ -18,6 +18,10 @@ services:
     ports:
       - '${REDIS_PORT:-6379}:6379'
 
-  backend:
+  api:
     deploy:
-      replicas: ${BACKEND_REPLICAS:-1}
+      replicas: ${API_REPLICAS:-1}
+
+  worker:
+    deploy:
+      replicas: ${WORKER_REPLICAS:-1}

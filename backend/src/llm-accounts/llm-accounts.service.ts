@@ -1,5 +1,4 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import {
@@ -9,6 +8,9 @@ import {
 } from './llm-account.schema';
 import { CreateLlmAccountDto } from './dto/create-llm-account.dto';
 import { UpdateLlmAccountDto } from './dto/update-llm-account.dto';
+import { CryptoService, normalizeSecret } from '../common/crypto.service';
+import { AiClientService } from '../ai/ai-client.service';
+import { LlmWirePayload } from '../ai/ai.types';
 
 /** Full LLM config (incl. key) sent to the ADK writer sidecar. */
 export interface ResolvedLlmConfig {
@@ -20,22 +22,16 @@ export interface ResolvedLlmConfig {
   temperature: number;
 }
 
-const TEST_TIMEOUT_MS = 30_000;
-
 @Injectable()
 export class LlmAccountsService {
   private readonly logger = new Logger(LlmAccountsService.name);
-  private readonly aiWriterUrl: string;
 
   constructor(
     @InjectModel(LlmAccount.name)
     private readonly model: Model<LlmAccountDocument>,
-    config: ConfigService,
-  ) {
-    this.aiWriterUrl = (
-      config.get<string>('app.aiWriterUrl') ?? 'http://localhost:8000'
-    ).replace(/\/$/, '');
-  }
+    private readonly crypto: CryptoService,
+    private readonly aiClient: AiClientService,
+  ) {}
 
   async list(sessionId: string): Promise<Record<string, unknown>[]> {
     const docs = await this.model
@@ -67,7 +63,8 @@ export class LlmAccountsService {
       label: dto.label.trim(),
       provider: dto.provider,
       model: dto.model.trim(),
-      apiKey: dto.apiKey ?? '',
+      // Normalized and encrypted at rest.
+      apiKey: this.crypto.encrypt(normalizeSecret(dto.apiKey ?? '')),
       apiBase: dto.apiBase?.trim() ?? '',
       temperature: dto.temperature ?? 0.7,
       isDefault: makeDefault,
@@ -94,7 +91,7 @@ export class LlmAccountsService {
     if (dto.apiBase !== undefined) doc.apiBase = dto.apiBase.trim();
     if (dto.temperature !== undefined) doc.temperature = dto.temperature;
     // Blank key means "keep the stored one".
-    if (dto.apiKey) doc.apiKey = dto.apiKey;
+    if (dto.apiKey) doc.apiKey = this.crypto.encrypt(normalizeSecret(dto.apiKey));
 
     if (dto.isDefault === true && !doc.isDefault) {
       await this.model
@@ -152,40 +149,23 @@ export class LlmAccountsService {
     return doc ? this.toResolved(doc) : null;
   }
 
-  /** Ask the ADK sidecar to try a tiny generation with this account's config. */
+  /** Ask the AI service to try a tiny generation with this account's config. */
   async test(
     sessionId: string,
     id: string,
   ): Promise<{ success: boolean; error?: string; engine?: string }> {
     const cfg = this.toResolved(await this.findOwned(sessionId, id));
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TEST_TIMEOUT_MS);
     try {
-      const res = await fetch(`${this.aiWriterUrl}/test`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ llm: this.toWirePayload(cfg) }),
-        signal: controller.signal,
-      });
-      const data = (await res.json().catch(() => ({}))) as {
-        success?: boolean;
-        error?: string;
-        engine?: string;
-      };
-      if (!res.ok) {
-        return { success: false, error: data.error ?? `Writer responded ${res.status}` };
-      }
-      return {
-        success: !!data.success,
-        error: data.error,
-        engine: data.engine,
-      };
+      const res = await this.aiClient.testLlm(
+        this.toWirePayload(cfg) as unknown as LlmWirePayload,
+      );
+      return { success: !!res.success, error: res.error, engine: res.engine };
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Could not reach the AI writer';
-      return { success: false, error: message };
-    } finally {
-      clearTimeout(timer);
+      return {
+        success: false,
+        error:
+          err instanceof Error ? err.message : 'Could not reach the AI service',
+      };
     }
   }
 
@@ -206,7 +186,8 @@ export class LlmAccountsService {
       id: doc._id.toString(),
       provider: o.provider,
       model: o.model,
-      apiKey: o.apiKey,
+      // Decrypted for use; legacy plaintext rows pass through unchanged.
+      apiKey: this.crypto.decrypt(o.apiKey),
       apiBase: o.apiBase,
       temperature: o.temperature,
     };
@@ -229,11 +210,12 @@ export class LlmAccountsService {
   private toPublic(doc: LlmAccountDocument): Record<string, unknown> {
     const o = doc.toObject() as LlmAccount & { _id: Types.ObjectId };
     const { apiKey, ...rest } = o;
+    const plain = apiKey ? this.crypto.decrypt(apiKey) : '';
     return {
       ...rest,
       _id: doc._id.toString(),
-      hasApiKey: !!apiKey,
-      apiKeyMasked: apiKey ? `••••••${apiKey.slice(-4)}` : '',
+      hasApiKey: !!plain,
+      apiKeyMasked: plain ? `••••••${plain.slice(-4)}` : '',
     };
   }
 }

@@ -1,9 +1,9 @@
 # ─────────────────────────────────────────────────────────────
 # Prod override — hardened for a server deploy.
 #
-# Keeps every internal service (mongo, redis, email-writer) OFF the host
-# network: nginx is the only published port. Uses `restart: always` and the
-# production replica count from .env.
+# Keeps every internal service (mongo, redis, ai-service, api, worker) OFF the
+# host network: the gateway is the only published port. Uses `restart: always`
+# and the production replica counts from .env.
 #
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
 #   # or: make prod
@@ -16,13 +16,18 @@ services:
   redis:
     restart: always
 
-  email-writer:
+  ai-service:
     restart: always
 
-  backend:
+  api:
     restart: always
     deploy:
-      replicas: ${BACKEND_REPLICAS:-3}
+      replicas: ${API_REPLICAS:-2}
 
-  nginx:
+  worker:
+    restart: always
+    deploy:
+      replicas: ${WORKER_REPLICAS:-3}
+
+  gateway:
     restart: always

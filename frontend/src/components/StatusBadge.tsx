@@ -1,4 +1,13 @@
-import { Check, Clock, Loader2, Send, Sparkles, X } from 'lucide-react';
+import {
+  Check,
+  CheckCircle2,
+  Clock,
+  Loader2,
+  Search,
+  Send,
+  Sparkles,
+  X,
+} from 'lucide-react';
 import type { LeadStatus } from '@/api/types';
 import { Badge, type BadgeProps } from '@/components/ui/badge';
 import {
@@ -25,6 +34,21 @@ const CONFIG: Record<
     label: 'Queued',
     variant: 'muted',
     icon: <Loader2 className="h-3 w-3 animate-spin" />,
+  },
+  researching: {
+    label: 'Researching',
+    variant: 'default',
+    icon: <Search className="h-3 w-3 animate-pulse" />,
+  },
+  analyzing: {
+    label: 'Analyzing',
+    variant: 'default',
+    icon: <Loader2 className="h-3 w-3 animate-spin" />,
+  },
+  ready: {
+    label: 'Audit ready',
+    variant: 'success',
+    icon: <CheckCircle2 className="h-3 w-3" />,
   },
   writing: {
     label: 'Writing',

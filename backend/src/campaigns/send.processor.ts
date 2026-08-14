@@ -1,46 +1,58 @@
 import { Logger } from '@nestjs/common';
-import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
-import { Job } from 'bullmq';
+import { Job, Queue } from 'bullmq';
 import { Model } from 'mongoose';
-import { Campaign, CampaignDocument, CampaignStatus } from './campaign.schema';
+import { Campaign, CampaignDocument } from './campaign.schema';
 import { Lead, LeadDocument, LeadStatus } from '../leads/lead.schema';
 import { SEND_QUEUE, SendJobData } from './queue.constants';
+import { SEND_JOB_OPTS } from '../pipeline/pipeline.constants';
 import { MailSenderService } from '../email-agent/mail-sender.service';
-import { EmailWriterService } from '../email-writer/email-writer.service';
-import { SettingsService } from '../settings/settings.service';
 import { SmtpAccountsService } from '../smtp-accounts/smtp-accounts.service';
-import { ComposedEmail } from '../email-writer/email-writer.interface';
+import { SettingsService } from '../settings/settings.service';
+import { EmailComposeService } from '../ai/email-compose.service';
+import { CampaignCountersService } from '../pipeline/campaign-counters.service';
+import { SuppressionsService } from '../suppressions/suppressions.service';
+import { RedisCoordinationService } from '../redis/redis-coordination.service';
 
 // Per-replica worker concurrency, read at import time so the decorator is
 // configured before the worker starts. Total throughput ≈ replicas × this.
 const CONCURRENCY = parseInt(process.env.SEND_CONCURRENCY ?? '3', 10);
 
 /**
- * Consumes the shared `campaign-send` queue. Because an instance of this worker
- * runs inside every backend container, BullMQ hands each job to whichever
- * replica is free — that is what actually spreads a 10k-lead campaign across
- * all containers in parallel (nginx only balances the HTTP API).
+ * Consumes the `campaign-send` queue — the final stage of the pipeline. The
+ * email was already composed from the lead's audit by the pipeline's email
+ * stage; this worker only delivers it over the session's SMTP account. (If a
+ * lead somehow arrives without a composed email, one is generated on the spot
+ * so a send is never blocked.)
  */
 @Processor(SEND_QUEUE, { concurrency: CONCURRENCY })
 export class SendProcessor extends WorkerHost {
   private readonly logger = new Logger(SendProcessor.name);
   private readonly instanceId: string;
+  private readonly publicUrl: string;
+  private readonly hourlyLimit: number;
 
   constructor(
     @InjectModel(Campaign.name)
     private readonly campaignModel: Model<CampaignDocument>,
     @InjectModel(Lead.name)
     private readonly leadModel: Model<LeadDocument>,
+    @InjectQueue(SEND_QUEUE) private readonly sendQueue: Queue<SendJobData>,
     private readonly mailSender: MailSenderService,
     private readonly smtpAccounts: SmtpAccountsService,
-    private readonly writer: EmailWriterService,
+    private readonly emailCompose: EmailComposeService,
     private readonly settings: SettingsService,
+    private readonly counters: CampaignCountersService,
+    private readonly suppressions: SuppressionsService,
+    private readonly coordination: RedisCoordinationService,
     config: ConfigService,
   ) {
     super();
     this.instanceId = config.get<string>('app.instanceId') ?? 'backend';
+    this.publicUrl = config.get<string>('app.publicUrl') ?? '';
+    this.hourlyLimit = config.get<number>('app.sendHourlyLimit') ?? 0;
   }
 
   async process(job: Job<SendJobData>): Promise<void> {
@@ -58,33 +70,85 @@ export class SendProcessor extends WorkerHost {
     // Resolve the SMTP account this campaign's session sends from. Starting a
     // campaign is gated on having one, but guard here too — if it's gone, fail
     // the lead cleanly instead of crashing the worker.
-    const smtp = await this.smtpAccounts.getDefaultConfig(
-      campaign?.sessionId ?? '',
-    );
+    const sessionId = campaign?.sessionId ?? '';
+    const smtp = await this.smtpAccounts.getDefaultConfig(sessionId);
     if (!smtp) {
       lead.status = LeadStatus.Failed;
       lead.errorMessage = 'No SMTP account configured.';
       await lead.save();
-      await this.bumpCounters(campaignId, { failedCount: 1 });
+      await this.counters.bumpFailed(campaignId);
       return;
     }
 
-    // Phase 1 — the AI writes this lead's email. Surface it live in the UI.
-    lead.status = LeadStatus.Writing;
+    // Never email someone who unsubscribed — skip before anything else.
+    if (await this.suppressions.isSuppressed(sessionId, lead.email)) {
+      lead.status = LeadStatus.Failed;
+      lead.errorMessage = 'Skipped — recipient has unsubscribed.';
+      await lead.save();
+      await this.counters.bumpFailed(campaignId);
+      this.logger.log(`[${this.instanceId}] skipped suppressed ${lead.email}.`);
+      return;
+    }
+
+    // Deliverability pacing: cap sends per SMTP account per hour so campaigns
+    // drip instead of burst (bursts are a classic spam-filter trigger). When
+    // the bucket is exhausted, push this send into the next window.
+    if (!(await this.coordination.takeHourlyToken(`send:${smtp.id}`, this.hourlyLimit))) {
+      const delay = 5 * 60_000 + Math.floor(Math.random() * 15 * 60_000);
+      await this.sendQueue.add('send', job.data, {
+        ...SEND_JOB_OPTS,
+        delay,
+        jobId: `defer:${leadId}:${Date.now()}`,
+      });
+      await this.leadModel
+        .updateOne({ _id: lead._id }, { $set: { status: LeadStatus.Queued } })
+        .exec();
+      this.logger.log(
+        `[${this.instanceId}] hourly send limit reached for account ${smtp.id} — ` +
+          `deferring ${lead.email} by ${Math.round(delay / 60_000)}m.`,
+      );
+      return;
+    }
+
+    // The pipeline's email stage normally composed this already; the safety
+    // net keeps legacy/edge leads sendable.
+    if (!lead.generatedSubject || !lead.generatedBody) {
+      const email = await this.emailCompose.compose({
+        lead,
+        campaign: {
+          name: campaign?.name ?? '',
+          description: campaign?.description,
+        },
+        settings: await this.settings.getForSession(sessionId),
+        audit: null,
+      });
+      lead.generatedSubject = email.subject;
+      lead.generatedBody = email.body;
+    }
+
+    lead.status = LeadStatus.Sending;
     lead.errorMessage = null;
     await lead.save();
 
-    // The AI writer composes a personalized subject + body for this lead
-    // (real AI when the writer service is reachable, local fallback otherwise).
-    const email = await this.compose(lead, campaign);
-    lead.generatedSubject = email.subject;
-    lead.generatedBody = email.body;
+    // Unsubscribe link: signed token, no auth required to redeem. The footer
+    // is added at send time only — the stored/displayed email stays clean.
+    const token = this.suppressions.token({ sessionId, email: lead.email });
+    const unsubscribeUrl = this.publicUrl
+      ? `${this.publicUrl}/api/unsubscribe?token=${token}`
+      : undefined;
+    const footer = unsubscribeUrl
+      ? `\n\n—\nDon't want emails like this? Unsubscribe: ${unsubscribeUrl}`
+      : `\n\n—\nDon't want emails like this? Just reply "unsubscribe".`;
 
-    // Phase 2 — deliver the composed email over the session's SMTP account.
-    lead.status = LeadStatus.Sending;
-    await lead.save();
-
-    const result = await this.mailSender.sendToLead(smtp, lead, email);
+    const result = await this.mailSender.sendToLead(
+      smtp,
+      lead,
+      {
+        subject: lead.generatedSubject,
+        body: lead.generatedBody + footer,
+      },
+      { unsubscribeUrl },
+    );
 
     if (result.success) {
       lead.status = LeadStatus.Sent;
@@ -93,7 +157,7 @@ export class SendProcessor extends WorkerHost {
       await lead.save();
       // Counters are incremented exactly once per lead — on success here, or on
       // the final failed attempt below — so completion detection stays correct.
-      await this.bumpCounters(campaignId, { sentCount: 1 });
+      await this.counters.bumpSent(campaignId);
       this.logger.log(
         `[${this.instanceId}] sent ${lead.email} (campaign ${campaignId}).`,
       );
@@ -105,72 +169,17 @@ export class SendProcessor extends WorkerHost {
     const error = result.error ?? 'Unknown error';
 
     if (!isFinalAttempt) {
-      // Transient failure — throw so BullMQ retries. Do NOT touch counters; the
-      // lead stays `sending` and gets another shot on a (possibly other) replica.
+      // Transient failure — throw so BullMQ retries (at most 2 auto-retries;
+      // see SEND_JOB_OPTS). Counters untouched; the lead stays `sending`.
       throw new Error(error);
     }
 
     lead.status = LeadStatus.Failed;
     lead.errorMessage = error;
     await lead.save();
-    await this.bumpCounters(campaignId, { failedCount: 1 });
+    await this.counters.bumpFailed(campaignId);
     this.logger.warn(
       `[${this.instanceId}] failed ${lead.email} after ${maxAttempts} attempts (campaign ${campaignId}).`,
     );
-  }
-
-  /** Compose the email for a lead using the session's AI writing settings. */
-  private async compose(
-    lead: LeadDocument,
-    campaign: CampaignDocument | null,
-  ): Promise<ComposedEmail> {
-    const sessionId = campaign?.sessionId ?? '';
-    const settings = await this.settings.getForSession(sessionId);
-    return this.writer.compose({
-      sessionId,
-      lead: {
-        email: lead.email,
-        firstName: lead.firstName,
-        lastName: lead.lastName,
-        company: lead.company,
-        title: lead.title,
-      },
-      campaign: {
-        name: campaign?.name ?? '',
-        // No predefined subject — the AI writer generates the subject itself.
-        description: campaign?.description,
-      },
-      settings,
-    });
-  }
-
-  /**
-   * Atomically increment campaign counters, then mark the campaign completed
-   * exactly once when every lead has been processed. The conditional filter on
-   * `status: Running` guarantees only one replica flips it to `completed`.
-   */
-  private async bumpCounters(
-    campaignId: string,
-    inc: { sentCount?: number; failedCount?: number },
-  ): Promise<void> {
-    const updated = await this.campaignModel
-      .findByIdAndUpdate(campaignId, { $inc: inc }, { new: true })
-      .exec();
-    if (!updated) return;
-
-    const processed = updated.sentCount + updated.failedCount;
-    if (processed >= updated.totalLeads) {
-      const res = await this.campaignModel
-        .updateOne(
-          { _id: campaignId, status: CampaignStatus.Running },
-          { $set: { status: CampaignStatus.Completed, completedAt: new Date() } },
-        )
-        .exec();
-      if (res.modifiedCount > 0) {
-        this.logger.log(
-          `■ Campaign ${campaignId} completed — sent ${updated.sentCount}, failed ${updated.failedCount}.`,
-        );
-      }
-    }
   }
 }

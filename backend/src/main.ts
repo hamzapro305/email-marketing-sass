@@ -20,9 +20,13 @@ async function bootstrap() {
     }),
   );
 
-  // CORS. `*` (or unset) reflects any origin — fine for local/demo and for the
-  // packaged desktop app (which sends `Origin: null` / a file:// origin). In
-  // production set CORS_ORIGIN to a comma-separated allow-list.
+  // Drain in-flight HTTP requests and BullMQ jobs on SIGTERM (Docker stop /
+  // rolling deploys) instead of dropping them mid-stage.
+  app.enableShutdownHooks();
+
+  // CORS. `*` (or unset) reflects any origin — fine for local development. In
+  // production the SPA is served from the same origin through nginx, so set
+  // CORS_ORIGIN to a comma-separated allow-list (or leave it strict).
   const corsOrigin = config.get<string>('app.corsOrigin') ?? '*';
   app.enableCors({
     origin:
@@ -37,7 +41,8 @@ async function bootstrap() {
   const port = config.get<number>('app.port') ?? 3000;
   await app.listen(port, '0.0.0.0');
 
-  logger.log(`🚀 Backend listening on http://localhost:${port}/api`);
+  const role = config.get<string>('app.role') ?? 'all';
+  logger.log(`🚀 Backend (${role}) listening on http://localhost:${port}/api`);
 }
 
 bootstrap();
