@@ -45,7 +45,7 @@ x-backend-base: &backend-base
     REDIS_HOST: redis
     REDIS_PORT: 6379
     AI_SERVICE_URL: http://ai-service:8000
-    PUBLIC_URL: https://${BACKEND_DOMAIN}
+    PUBLIC_URL: https://${BACKEND_DOMAIN:-localhost}
     CORS_ORIGIN: ${CORS_ORIGIN:-https://${FRONTEND_DOMAIN}}
     ENCRYPTION_KEY: ${ENCRYPTION_KEY}
     SEND_HOURLY_LIMIT: ${SEND_HOURLY_LIMIT:-80}
@@ -136,8 +136,6 @@ services:
         condition: service_healthy
     expose:
       - '3000'
-    deploy:
-      replicas: ${API_REPLICAS:-2}
 
   # ── Internal: Worker (queue consumers) ───────────────────────
   worker:
@@ -154,8 +152,6 @@ services:
         condition: service_healthy
     expose:
       - '3000'
-    deploy:
-      replicas: ${WORKER_REPLICAS:-3}
 
   # ── External: Gateway (nginx — SPA + /api proxy) ─────────────
   gateway:
