@@ -36,8 +36,6 @@ x-backend-base: &backend-base
   build:
     context: ./backend
   restart: always
-  networks:
-    - internal
   environment: &backend-env
     NODE_ENV: production
     PORT: 3000
@@ -73,8 +71,6 @@ services:
   mongo:
     image: mongo:7
     restart: always
-    networks:
-      - internal
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-root}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
@@ -91,8 +87,6 @@ services:
   redis:
     image: redis:7-alpine
     restart: always
-    networks:
-      - internal
     command: [ 'redis-server', '--appendonly', 'yes' ]
     volumes:
       - redis-data:/data
@@ -108,8 +102,6 @@ services:
     build:
       context: ./ai-service
     restart: always
-    networks:
-      - internal
     expose:
       - '8000'
     healthcheck:
@@ -158,8 +150,6 @@ services:
     build:
       context: ./frontend
     restart: always
-    networks:
-      - internal
     depends_on:
       - api
     expose:
@@ -170,10 +160,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-
-networks:
-  internal:
-    driver: bridge
 
 volumes:
   mongo-data:
