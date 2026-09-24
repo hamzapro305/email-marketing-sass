@@ -5,7 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Job, Queue } from 'bullmq';
 import { Model } from 'mongoose';
-import { AuditStage, STAGE_ORDER } from '../audits/audit.types';
+import { AuditStage, STAGE_ORDER, StageLogger } from '../audits/audit.types';
 import { AuditsService } from '../audits/audits.service';
 import { LeadAuditDocument } from '../audits/lead-audit.schema';
 import { Lead, LeadDocument, LeadStatus } from '../leads/lead.schema';
@@ -84,12 +84,19 @@ export class PipelineProcessor extends WorkerHost {
       return;
     }
 
+    const trace = this.audits.stageLogger(leadId, runId, stage);
     try {
       await this.audits.beginStage(leadId, runId, stage);
-      const patch = await this.runStage(stage, lead, audit, job.data);
+      if (job.attemptsMade > 0) {
+        trace.log('info', `Retrying (attempt ${job.attemptsMade + 1})`);
+      }
+      const patch = await this.runStage(stage, lead, audit, job.data, trace.log);
+      await trace.flush();
       await this.audits.completeStage(leadId, runId, stage, patch);
       await this.advance(job.data);
     } catch (err) {
+      trace.log('error', 'Stage failed', err instanceof Error ? err.message : String(err));
+      await trace.flush();
       await this.handleStageError(job, lead, err);
     }
   }
@@ -99,32 +106,56 @@ export class PipelineProcessor extends WorkerHost {
     lead: LeadDocument,
     audit: LeadAuditDocument,
     data: PipelineJobData,
+    log: StageLogger,
   ): Promise<Record<string, unknown>> {
     switch (stage) {
       case AuditStage.Process:
-        return this.stageProcess(lead);
+        return this.stageProcess(lead, log);
       case AuditStage.Research:
-        return this.stageResearch(lead, data);
+        return this.stageResearch(lead, data, log);
       case AuditStage.Rivals:
-        return this.stageRivals(lead, audit);
+        return this.stageRivals(lead, audit, log);
       case AuditStage.Scrape:
-        return this.stageScrape(lead, audit);
+        return this.stageScrape(lead, audit, log);
       case AuditStage.Analyze:
-        return this.stageAnalyze(lead, audit, data);
+        return this.stageAnalyze(lead, audit, data, log);
       case AuditStage.Email:
-        return this.stageEmail(lead, audit, data);
+        return this.stageEmail(lead, audit, data, log);
       default:
         throw new Error(`Unknown pipeline stage: ${stage}`);
     }
   }
 
   /** Normalize the lead and derive its research key (company domain). */
-  private async stageProcess(lead: LeadDocument): Promise<Record<string, unknown>> {
+  private async stageProcess(
+    lead: LeadDocument,
+    log: StageLogger,
+  ): Promise<Record<string, unknown>> {
+    const emailDomain = lead.email.split('@')[1] ?? '';
     if (!lead.companyDomain) {
       lead.companyDomain = deriveCompanyDomain(lead.email, lead.website);
     }
+    if (lead.companyDomain) {
+      log(
+        'success',
+        `Company domain resolved to ${lead.companyDomain}`,
+        lead.website
+          ? `Taken from the website field (${lead.website}).`
+          : `Taken from the email address (@${emailDomain}).`,
+      );
+    } else {
+      log(
+        'warn',
+        'No company domain could be determined',
+        `@${emailDomain} is a personal/free mail provider and no website was supplied. ` +
+          'Without a domain there is nothing to scrape, so research, competitor discovery and ' +
+          'analysis will have no evidence. Add a Website (or Company + Website) to the lead ' +
+          'and re-run the audit.',
+      );
+    }
     if (!lead.website && lead.companyDomain) {
       lead.website = `https://${lead.companyDomain}`;
+      log('info', `No website given — assuming ${lead.website}`);
     }
     lead.status = LeadStatus.Researching;
     lead.errorMessage = null;
@@ -140,11 +171,21 @@ export class PipelineProcessor extends WorkerHost {
   private async stageResearch(
     lead: LeadDocument,
     data: PipelineJobData,
+    log: StageLogger,
   ): Promise<Record<string, unknown>> {
     if (!lead.companyDomain) {
       // Personal email + no website: nothing to research. Later stages
       // degrade gracefully (no rivals, heuristics-only analysis).
+      log('warn', 'Skipped — no company domain to research (see Lead processing).');
       return {};
+    }
+    const llm = await this.resolveLlm(data.sessionId);
+    if (!llm) {
+      log(
+        'warn',
+        'No AI provider configured for this workspace',
+        'Add a provider under Settings → AI providers. Until then every AI step falls back to heuristics.',
+      );
     }
     const result = await this.research.getOrBuild({
       domain: lead.companyDomain,
@@ -152,7 +193,8 @@ export class PipelineProcessor extends WorkerHost {
       companyName: lead.company,
       industry: lead.industry,
       location: lead.location,
-      llm: await this.resolveLlm(data.sessionId),
+      llm,
+      log,
     });
     return {
       company: result.profile,
@@ -166,21 +208,58 @@ export class PipelineProcessor extends WorkerHost {
   private async stageRivals(
     lead: LeadDocument,
     audit: LeadAuditDocument,
+    log: StageLogger,
   ): Promise<Record<string, unknown>> {
-    if (audit.rivals && audit.rivals.length > 0) return {};
+    if (audit.rivals && audit.rivals.length > 0) {
+      log(
+        'success',
+        `${audit.rivals.length} competitor${audit.rivals.length === 1 ? '' : 's'} confirmed from the company brief`,
+        audit.rivals.map((r) => `${r.name} — ${r.website}`).join('\n'),
+      );
+      return {};
+    }
+    if (!lead.companyDomain) {
+      log('warn', 'Skipped — no company domain, so no competitors can be discovered.');
+      return {};
+    }
     const rivals = await this.rivals.getCachedRivals(lead.companyDomain);
-    return rivals.length > 0 ? { rivals } : {};
+    if (rivals.length > 0) {
+      log(
+        'success',
+        `${rivals.length} competitor${rivals.length === 1 ? '' : 's'} found in the research cache`,
+        rivals.map((r) => `${r.name} — ${r.website}`).join('\n'),
+      );
+      return { rivals };
+    }
+    log(
+      'warn',
+      'No competitors identified',
+      audit.company?.engine === 'fallback'
+        ? 'Competitor discovery needs an AI provider — the brief was heuristic, and we never invent competitors.'
+        : 'The AI brief did not propose any competitor with a valid, distinct website.',
+    );
+    return {};
   }
 
   /** Scrape rival websites for comparable evidence. */
   private async stageScrape(
     lead: LeadDocument,
     audit: LeadAuditDocument,
+    log: StageLogger,
   ): Promise<Record<string, unknown>> {
-    if (!audit.rivals || audit.rivals.length === 0) return {};
+    if (!audit.rivals || audit.rivals.length === 0) {
+      log('warn', 'Skipped — no competitors to scrape.');
+      return {};
+    }
     const scraped = await this.rivals.scrapeRivals(
       lead.companyDomain,
       audit.rivals,
+      log,
+    );
+    const pages = scraped.reduce((n, r) => n + r.pages.length, 0);
+    log(
+      pages ? 'success' : 'warn',
+      `Collected ${pages} page${pages === 1 ? '' : 's'} of competitor evidence across ${scraped.length} site${scraped.length === 1 ? '' : 's'}`,
     );
     return { rivals: scraped };
   }
@@ -190,12 +269,14 @@ export class PipelineProcessor extends WorkerHost {
     lead: LeadDocument,
     audit: LeadAuditDocument,
     data: PipelineJobData,
+    log: StageLogger,
   ): Promise<Record<string, unknown>> {
     await this.setLeadStatus(lead, LeadStatus.Analyzing);
     const result = await this.analysis.analyze(
       lead,
       audit,
       await this.resolveLlm(data.sessionId),
+      log,
     );
     return { analysis: result };
   }
@@ -205,6 +286,7 @@ export class PipelineProcessor extends WorkerHost {
     lead: LeadDocument,
     audit: LeadAuditDocument,
     data: PipelineJobData,
+    log: StageLogger,
   ): Promise<Record<string, unknown>> {
     await this.setLeadStatus(lead, LeadStatus.Writing);
 
@@ -222,6 +304,7 @@ export class PipelineProcessor extends WorkerHost {
       settings,
       audit,
       llm: await this.resolveLlm(data.sessionId),
+      log,
     });
 
     lead.generatedSubject = email.subject;
@@ -242,6 +325,15 @@ export class PipelineProcessor extends WorkerHost {
 
     // Pipeline finished — the audit is complete.
     await this.audits.completeRun(data.leadId, data.runId);
+    await this.audits.log(
+      data.leadId,
+      data.runId,
+      'run',
+      'success',
+      data.send && data.campaignId
+        ? 'Audit complete — email queued for sending'
+        : 'Audit complete — lead is ready to review',
+    );
 
     if (data.send && data.campaignId) {
       await this.sendQueue.add(

@@ -26,7 +26,7 @@ export class FallbackEmailWriterService {
 
     if (audit?.companySummary) {
       lines.push(
-        `I spent some time on ${company}'s site — ${this.firstClause(audit.companySummary)}`,
+        `I spent some time on ${company}'s site: ${this.firstClause(audit.companySummary)}`,
         '',
       );
     } else {
@@ -38,7 +38,7 @@ export class FallbackEmailWriterService {
     }
     if (rivalNames.length > 0 && opportunity) {
       lines.push(
-        `Compared with ${rivalNames.join(' and ')}, that's a gap worth closing — ${this.lower(
+        `Compared with ${rivalNames.join(' and ')}, that's a gap worth closing. ${this.upper(
           opportunity.detail,
         )}`,
         '',
@@ -70,6 +70,11 @@ export class FallbackEmailWriterService {
   private lower(text: string): string {
     if (!text) return text;
     return text.charAt(0).toLowerCase() + text.slice(1);
+  }
+
+  private upper(text: string): string {
+    if (!text) return text;
+    return text.charAt(0).toUpperCase() + text.slice(1);
   }
 
   private firstClause(text: string): string {

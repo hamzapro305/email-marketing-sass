@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { FileSpreadsheet, Loader2, Download, UploadCloud } from 'lucide-react';
+import { AlertTriangle, FileSpreadsheet, Loader2, Download, UploadCloud } from 'lucide-react';
 import { parseLeadFile } from '@/api/parse-file';
 import type { ParsedLead, UploadResult } from '@/api/types';
 import { cn } from '@/lib/utils';
@@ -18,6 +18,7 @@ interface Preview {
   file: File;
   rows: ParsedLead[];
   skipped: number;
+  warnings: string[];
 }
 
 const ACCEPT = '.csv,.xlsx,.xls';
@@ -34,14 +35,14 @@ export function ImportPanel({ upload, onImported, onError, disabled }: Props) {
       setParsing(true);
       setPreview(null);
       try {
-        const { rows, skipped } = await parseLeadFile(file);
+        const { rows, skipped, warnings } = await parseLeadFile(file);
         if (rows.length === 0) {
           onError(
             `No valid leads found in "${file.name}". Make sure it has an email column.`,
           );
           return;
         }
-        setPreview({ file, rows, skipped });
+        setPreview({ file, rows, skipped, warnings });
       } catch (e) {
         onError(e instanceof Error ? e.message : 'Failed to parse file');
       } finally {
@@ -97,6 +98,19 @@ export function ImportPanel({ upload, onImported, onError, disabled }: Props) {
             </div>
           </div>
         </div>
+        {preview.warnings.length > 0 && (
+          <ul className="mt-4 space-y-2">
+            {preview.warnings.map((w) => (
+              <li
+                key={w}
+                className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-sm"
+              >
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+                <span>{w}</span>
+              </li>
+            ))}
+          </ul>
+        )}
         <div className="mt-5 flex flex-col gap-2 sm:flex-row">
           <Button
             size="lg"

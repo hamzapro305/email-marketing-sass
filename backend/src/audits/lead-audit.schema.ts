@@ -2,6 +2,7 @@ import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Schema as MongooseSchema, Types } from 'mongoose';
 import {
   AuditAnalysis,
+  AuditLogEntry,
   AuditStages,
   CompanyProfileData,
   GeneratedEmailData,
@@ -83,6 +84,10 @@ export class LeadAudit {
   /** The personalized email generated from this audit. */
   @Prop({ type: MongooseSchema.Types.Mixed, default: null })
   email: GeneratedEmailData | null;
+
+  /** Step-by-step activity trace of the current run (capped). */
+  @Prop({ type: MongooseSchema.Types.Mixed, default: [] })
+  activity: AuditLogEntry[];
 
   @Prop({ type: String, default: null })
   error: string | null;

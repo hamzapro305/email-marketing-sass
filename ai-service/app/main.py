@@ -28,7 +28,7 @@ from .agents import analysis as analysis_agent
 from .agents import brief as brief_agent
 from .agents import email as email_agent
 from .llm import normalize_provider
-from .runner import run_agent
+from .runner import last_usage, run_agent
 from .schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
@@ -54,6 +54,15 @@ def _usable(llm: LlmConfig | None) -> bool:
     return bool(llm and llm.provider)
 
 
+_NO_LLM = "No AI provider configured for this workspace."
+
+
+def _reason(exc: Exception) -> str:
+    """A short, UI-safe description of why an agent call failed."""
+    text = " ".join(str(exc).split()) or exc.__class__.__name__
+    return f"{exc.__class__.__name__}: {text}"[:500]
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "framework": "google-adk"}
@@ -61,29 +70,45 @@ def health() -> dict:
 
 @app.post("/research/brief", response_model=BriefResponse)
 async def research_brief(req: BriefRequest) -> BriefResponse:
-    if _usable(req.llm):
+    reason = _NO_LLM
+    if _usable(req.llm) and not req.pages:
+        # Nothing scraped → a model would only guess. Don't pay for guesses.
+        reason = "Skipped the AI call: no website pages were read, so there is nothing to ground a brief in."
+    elif _usable(req.llm):
         try:
             profile, rivals = await brief_agent.brief(req, req.llm)
             return BriefResponse(
                 profile=profile,
                 rivals=rivals,
                 engine=normalize_provider(req.llm.provider),
+                usage=last_usage(),
             )
         except Exception as exc:  # noqa: BLE001 — degrade, never block
             logger.warning("Brief agent failed (%s): %s", req.company.domain, exc)
+            reason = _reason(exc)
     # No LLM → grounded profile from scraped pages, and NO invented rivals.
     return BriefResponse(
-        profile=fallbacks.fallback_brief(req), rivals=[], engine="fallback"
+        profile=fallbacks.fallback_brief(req),
+        rivals=[],
+        engine="fallback",
+        error=reason,
+        usage=last_usage(),
     )
 
 
 @app.post("/audit/analyze", response_model=AnalyzeResponse)
 async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
-    if _usable(req.llm):
+    reason = _NO_LLM
+    has_evidence = bool(req.company.excerpts or req.company.signals or req.rivals)
+    if _usable(req.llm) and not has_evidence:
+        reason = "Skipped the AI call: no website pages, signals or competitors to analyze."
+    elif _usable(req.llm):
         try:
             result = await analysis_agent.analyze(req, req.llm)
             return AnalyzeResponse(
-                analysis=result, engine=normalize_provider(req.llm.provider)
+                analysis=result,
+                engine=normalize_provider(req.llm.provider),
+                usage=last_usage(),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -91,20 +116,34 @@ async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
                 req.company.profile.get("name", "?"),
                 exc,
             )
-    return AnalyzeResponse(analysis=fallbacks.fallback_analysis(req), engine="fallback")
+            reason = _reason(exc)
+    return AnalyzeResponse(
+        analysis=fallbacks.fallback_analysis(req),
+        engine="fallback",
+        error=reason,
+        usage=last_usage(),
+    )
 
 
 @app.post("/email/write", response_model=WriteEmailResponse)
 async def write(req: WriteEmailRequest) -> WriteEmailResponse:
+    reason = _NO_LLM
     if _usable(req.llm):
         try:
             subject, body = await email_agent.write(req, req.llm)
             return WriteEmailResponse(
-                subject=subject, body=body, engine=normalize_provider(req.llm.provider)
+                subject=subject,
+                body=body,
+                engine=normalize_provider(req.llm.provider),
+                usage=last_usage(),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Email agent failed (%s): %s", req.lead.email, exc)
-    return fallbacks.fallback_email(req)
+            reason = _reason(exc)
+    response = fallbacks.fallback_email(req)
+    response.error = reason
+    response.usage = last_usage()
+    return response
 
 
 @app.post("/llm/test", response_model=TestResponse)
@@ -117,6 +156,7 @@ async def test(req: TestRequest) -> TestResponse:
             instruction="You are a connectivity check. Reply with a single lowercase word.",
             prompt="Reply with exactly: ok",
             cfg=req.llm,
+            max_tokens=400,
         )
         return TestResponse(success=True, engine=normalize_provider(req.llm.provider))
     except Exception as exc:  # noqa: BLE001 — report the failure to the UI

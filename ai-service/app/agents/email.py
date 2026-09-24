@@ -27,6 +27,9 @@ def _instruction(req: WriteEmailRequest) -> str:
         " (a specific weakness, gap, or competitor fact). Generic flattery or"
         " template-sounding copy is a failure.",
         "- Never fabricate facts beyond the provided research.",
+        "- Never invent claims about the SENDER: no client names, case studies,"
+        " percentages, results, or testimonials unless they appear verbatim in"
+        " the campaign offer. If the offer gives no proof points, make none.",
         f"- Tone: {s.tone}",
         f"- Language: {s.language}",
         f"- Keep it under {s.wordLimit} words",
@@ -39,6 +42,8 @@ def _instruction(req: WriteEmailRequest) -> str:
         " provided in the offer; never invent URLs; no attachments talk;"
         " no excessive punctuation!!! or spammy urgency.",
         "- Write like one human emailing another, not a broadcast.",
+        "- Punctuation: never use em dashes (—) or en dashes (–). Use commas,"
+        " periods, or colons instead; a plain hyphen only inside compound words.",
     ]
     if s.callToAction.strip():
         lines.append(
@@ -97,6 +102,8 @@ async def write(req: WriteEmailRequest, cfg: LlmConfig) -> tuple[str, str]:
         instruction=_instruction(req),
         prompt=_prompt(req),
         cfg=cfg,
+        # Output cap (reasoning included) sized to the JSON this agent returns.
+        max_tokens=1500,
     )
     data = extract_json(text)
     if not isinstance(data, dict) or not data.get("subject") or not data.get("body"):

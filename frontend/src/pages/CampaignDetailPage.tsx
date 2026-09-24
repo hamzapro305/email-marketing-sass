@@ -69,6 +69,11 @@ export function CampaignDetailPage({ id, isDark, onToggleTheme, navigate }: Prop
           (result.skipped > 0 ? ` · ${result.skipped} skipped` : '') +
           (result.duplicates > 0 ? ` · ${result.duplicates} duplicates` : ''),
       });
+      // Structural problems (ragged rows, no website column) stay on screen
+      // until dismissed — they decide whether the audits will find anything.
+      for (const warning of result.warnings ?? []) {
+        toast.warning('Check your file', { description: warning, duration: 15_000 });
+      }
       void refresh();
     },
     [refresh],

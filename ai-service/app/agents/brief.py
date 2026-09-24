@@ -80,6 +80,8 @@ async def brief(
         instruction=_INSTRUCTION.format(max_rivals=req.maxRivals),
         prompt=_prompt(req),
         cfg=cfg,
+        # Output cap (reasoning included) sized to the JSON this agent returns.
+        max_tokens=3000,
     )
     data = extract_json(text)
     if not isinstance(data, dict):

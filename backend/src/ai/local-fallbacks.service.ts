@@ -129,7 +129,7 @@ export class LocalFallbacksService {
     for (const w of weaknesses.slice(0, 4)) {
       opportunities.push({
         title: `Fix: ${w.title.toLowerCase()}`,
-        detail: `Addressing this is a concrete, provable improvement — a natural outreach angle.`,
+        detail: `Addressing this is a concrete, provable improvement and a natural outreach angle.`,
         evidence: w.evidence,
       });
       recommendations.push({

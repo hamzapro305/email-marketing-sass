@@ -91,6 +91,8 @@ export interface UploadResult {
   skipped: number;
   /** Rows dropped as duplicates (within the file or already in the campaign). */
   duplicates: number;
+  /** Structural problems the parser noticed (ragged rows, missing website column…). */
+  warnings?: string[];
 }
 
 export interface CreateCampaignInput {
@@ -172,7 +174,7 @@ export interface SmtpTestResult {
 }
 
 // ── LLM providers (AI writer) ──────────────────────────────────
-export type LlmProvider = 'gemini' | 'openai' | 'ollama';
+export type LlmProvider = 'gemini' | 'openai' | 'kimi' | 'ollama';
 
 /** An LLM account as returned by the API (API key masked). */
 export interface LlmAccount {
@@ -196,7 +198,7 @@ export interface LlmAccountInput {
   model: string;
   /** Omitted/blank on edit keeps the stored key. Not used for Ollama. */
   apiKey?: string;
-  /** Ollama base URL. */
+  /** Ollama base URL, or optional Kimi region base. */
   apiBase?: string;
   temperature?: number;
   isDefault?: boolean;
@@ -216,6 +218,7 @@ export interface ParsedLead {
   lastName?: string;
   company?: string;
   title?: string;
+  website?: string;
 }
 
 // ── Lead audit (the structured research pipeline output) ───────
@@ -335,6 +338,17 @@ export interface GeneratedEmail {
   engine: string;
 }
 
+export type AuditLogLevel = 'info' | 'success' | 'warn' | 'error';
+
+/** One line of the audit's step-by-step activity trace. */
+export interface AuditLogEntry {
+  at: string;
+  stage: AuditStage | 'run';
+  level: AuditLogLevel;
+  message: string;
+  detail?: string;
+}
+
 export interface LeadAudit {
   _id: string;
   leadId: string;
@@ -350,6 +364,8 @@ export interface LeadAudit {
   rivals: Rival[];
   analysis: AuditAnalysis | null;
   email: GeneratedEmail | null;
+  /** Step-by-step trace of what the pipeline did and why. */
+  activity?: AuditLogEntry[];
   error: string | null;
   completedAt: string | null;
   createdAt: string;

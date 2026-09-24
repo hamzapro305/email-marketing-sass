@@ -2,7 +2,17 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { AuditRunStatus, LeadAudit, LeadAuditDocument } from './lead-audit.schema';
-import { AuditStage, StageStatus, freshStages } from './audit.types';
+import {
+  AuditLogEntry,
+  AuditLogLevel,
+  AuditStage,
+  StageLogger,
+  StageStatus,
+  freshStages,
+} from './audit.types';
+
+/** Oldest entries are dropped beyond this, keeping the document bounded. */
+const MAX_ACTIVITY = 200;
 import { Lead, LeadDocument } from '../leads/lead.schema';
 
 /**
@@ -42,6 +52,7 @@ export class AuditsService {
             rivals: [],
             analysis: null,
             email: null,
+            activity: [],
             error: null,
             completedAt: null,
           },
@@ -80,6 +91,7 @@ export class AuditsService {
               rivals: [],
               analysis: null,
               email: null,
+              activity: [],
               error: null,
               completedAt: null,
             },
@@ -172,6 +184,50 @@ export class AuditsService {
         { $set: { [`stages.${stage}.error`]: error.slice(0, 1000) } },
       )
       .exec();
+  }
+
+  /** Append one entry to the run's activity trace. */
+  async log(
+    leadId: string,
+    runId: string,
+    stage: AuditLogEntry['stage'],
+    level: AuditLogLevel,
+    message: string,
+    detail?: string,
+  ): Promise<void> {
+    const entry: AuditLogEntry = {
+      at: new Date(),
+      stage,
+      level,
+      message: message.slice(0, 500),
+      ...(detail ? { detail: detail.slice(0, 4_000) } : {}),
+    };
+    await this.auditModel
+      .updateOne(
+        { leadId: new Types.ObjectId(leadId), runId },
+        { $push: { activity: { $each: [entry], $slice: -MAX_ACTIVITY } } },
+      )
+      .exec();
+  }
+
+  /**
+   * A {@link StageLogger} bound to one stage of one run. Writes are chained so
+   * entries land in call order and appear live; `flush()` awaits them all.
+   * Logging never throws into the pipeline — a lost trace line is not worth
+   * failing an audit over.
+   */
+  stageLogger(
+    leadId: string,
+    runId: string,
+    stage: AuditLogEntry['stage'],
+  ): { log: StageLogger; flush: () => Promise<void> } {
+    let chain: Promise<void> = Promise.resolve();
+    const log: StageLogger = (level, message, detail) => {
+      chain = chain
+        .then(() => this.log(leadId, runId, stage, level, message, detail))
+        .catch(() => undefined);
+    };
+    return { log, flush: () => chain };
   }
 
   /** Finish the run successfully. */

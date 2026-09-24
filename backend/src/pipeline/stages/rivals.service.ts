@@ -5,9 +5,9 @@ import {
   CompanyProfile,
   CompanyProfileDocument,
 } from '../../audits/company-profile.schema';
-import { RivalData } from '../../audits/audit.types';
+import { RivalData, StageLogger, noopStageLogger } from '../../audits/audit.types';
 import { ScraperService } from '../../scraper/scraper.service';
-import { pageToRef } from './company-research.service';
+import { describeSignals, pageToRef } from './company-research.service';
 
 /** Rival sites get a smaller scrape budget than the lead's own company. */
 const RIVAL_PAGE_BUDGET = 3;
@@ -42,15 +42,32 @@ export class RivalsService {
   async scrapeRivals(
     companyDomain: string,
     rivals: RivalData[],
+    log: StageLogger = noopStageLogger,
   ): Promise<RivalData[]> {
     const scraped: RivalData[] = [];
     for (const rival of rivals) {
-      if (rival.pages.length > 0 || !rival.website) {
-        scraped.push(rival); // already scraped (cache hit) or nothing to scrape
+      if (rival.pages.length > 0) {
+        log('success', `${rival.name}: reusing ${rival.pages.length} cached page${rival.pages.length === 1 ? '' : 's'}`);
+        scraped.push(rival);
         continue;
       }
-      const site = await this.scraper.scrapeSite(rival.website, rival.domain);
+      if (!rival.website) {
+        log('warn', `${rival.name}: no website known — nothing to scrape`);
+        scraped.push(rival);
+        continue;
+      }
+      log('info', `${rival.name}: scraping ${rival.website} (up to ${RIVAL_PAGE_BUDGET} pages)`);
+      const site = await this.scraper.scrapeSite(rival.website, rival.domain, log);
       const home = site.pages[0];
+      if (site.pages.length > 0) {
+        log(
+          'success',
+          `${rival.name}: ${site.pages.length} page${site.pages.length === 1 ? '' : 's'} read`,
+          describeSignals(site.signals),
+        );
+      } else {
+        log('warn', `${rival.name}: site could not be read`, site.error ?? undefined);
+      }
       scraped.push({
         ...rival,
         summary:

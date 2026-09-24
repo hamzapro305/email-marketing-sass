@@ -40,7 +40,7 @@ plumbing. Adding a capability = one agent module + one endpoint + one fallback.
 
 The service holds **no credentials**. The LLM (provider, model, API key/base,
 temperature) arrives on each request from the user's in-app *AI providers*
-account (Gemini, OpenAI, or Ollama — all via ADK's LiteLLM integration).
+account (Gemini, OpenAI, Kimi, or Ollama — all via ADK's LiteLLM integration).
 Without one, every endpoint returns a deterministic fallback derived from the
 request's own scraped data — so the pipeline always completes, and its degraded
 output is still grounded in real research rather than invented.

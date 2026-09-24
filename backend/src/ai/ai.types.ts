@@ -7,11 +7,36 @@ import {
 } from '../audits/audit.types';
 import { WebsiteSignals } from '../scraper/scraper.types';
 
+/** Token/latency cost of one model call, as reported by the AI service. */
+export interface LlmUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  /** Portion of outputTokens spent on hidden reasoning, when reported. */
+  reasoningTokens: number;
+  ms: number;
+}
+
+/** "kimi-k2.6 · 2,140 in / 610 out (310 reasoning) · 14.2s" */
+export const formatUsage = (u: LlmUsage | null | undefined): string => {
+  if (!u || (!u.inputTokens && !u.outputTokens)) return '';
+  const n = (x: number) => x.toLocaleString('en-US');
+  return (
+    `${u.model ? `${u.model.replace(/^[a-z_]+\//, '')} · ` : ''}` +
+    `${n(u.inputTokens)} in / ${n(u.outputTokens)} out tokens` +
+    (u.reasoningTokens ? ` (${n(u.reasoningTokens)} reasoning)` : '') +
+    ` · ${(u.ms / 1000).toFixed(1)}s`
+  );
+};
+
 /** The email an AI writer produces for a single lead. */
 export interface ComposedEmail {
   subject: string;
   body: string;
   engine: string;
+  /** Why a fallback writer was used; absent/empty when the LLM answered. */
+  error?: string;
+  usage?: LlmUsage | null;
 }
 
 /** Lead shape shared with the AI service. */
@@ -62,6 +87,8 @@ export interface BriefResponse {
   profile: Omit<CompanyProfileData, 'domain' | 'website' | 'engine'>;
   rivals: Array<{ name: string; website: string; reason: string }>;
   engine: string;
+  error?: string;
+  usage?: LlmUsage | null;
 }
 
 // ── /audit/analyze ─────────────────────────────────────────────
@@ -88,6 +115,8 @@ export interface AnalyzeRequest {
 export interface AnalyzeResponse {
   analysis: Omit<AuditAnalysis, 'engine'>;
   engine: string;
+  error?: string;
+  usage?: LlmUsage | null;
 }
 
 // ── /email/write ───────────────────────────────────────────────

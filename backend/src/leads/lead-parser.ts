@@ -22,7 +22,12 @@ export interface ParseResult {
   skipped: number;
   /** Rows dropped as duplicates (same email) within this file. */
   duplicates: number;
+  /** Structural problems worth surfacing (ragged rows, no website column…). */
+  warnings: string[];
 }
+
+// PapaParse files a row's surplus cells (more values than headers) here.
+const EXTRA_KEY = '__parsed_extra';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -162,16 +167,22 @@ export function deriveCompanyDomain(email: string, website: string): string {
  * repeating an email already seen in this file are dropped as duplicates.
  */
 function mapRecords(records: Record<string, unknown>[]): ParseResult {
-  if (records.length === 0) return { rows: [], skipped: 0, duplicates: 0 };
+  if (records.length === 0) {
+    return { rows: [], skipped: 0, duplicates: 0, warnings: [] };
+  }
 
-  const fieldMap = buildFieldMap(Object.keys(records[0]));
+  const headers = Object.keys(records[0]).filter((h) => h !== EXTRA_KEY);
+  const fieldMap = buildFieldMap(headers);
 
   const rows: ParsedLeadRow[] = [];
   const seen = new Set<string>();
   let skipped = 0;
   let duplicates = 0;
+  let ragged = 0;
 
   for (const record of records) {
+    const extra = record[EXTRA_KEY];
+    if (Array.isArray(extra) && extra.length > 0) ragged += 1;
     const out: ParsedLeadRow = {
       email: '',
       firstName: '',
@@ -210,7 +221,25 @@ function mapRecords(records: Record<string, unknown>[]): ParseResult {
     rows.push(out);
   }
 
-  return { rows, skipped, duplicates };
+  const warnings: string[] = [];
+  if (ragged > 0) {
+    warnings.push(
+      `${ragged} row${ragged === 1 ? ' has' : 's have'} more values than the header row ` +
+        `(${headers.length} column${headers.length === 1 ? '' : 's'}: ${headers.join(', ')}). ` +
+        'The extra values were ignored — add the missing column names to the first line.',
+    );
+  }
+  const unresearchable = rows.filter((r) => !r.companyDomain).length;
+  if (unresearchable > 0) {
+    const hasWebsiteColumn = [...fieldMap.values()].includes('website');
+    warnings.push(
+      `${unresearchable} lead${unresearchable === 1 ? ' uses' : 's use'} a personal email ` +
+        (hasWebsiteColumn ? 'with an empty Website cell' : 'and the file has no Website column') +
+        '. Without a company website there is nothing to research, so the audit will be empty.',
+    );
+  }
+
+  return { rows, skipped, duplicates, warnings };
 }
 
 /** Parse a CSV buffer into canonical rows. */
@@ -228,7 +257,7 @@ export function parseCsv(buffer: Buffer): ParseResult {
 export function parseXlsx(buffer: Buffer): ParseResult {
   const workbook = XLSX.read(buffer, { type: 'buffer' });
   const sheetName = workbook.SheetNames[0];
-  if (!sheetName) return { rows: [], skipped: 0, duplicates: 0 };
+  if (!sheetName) return { rows: [], skipped: 0, duplicates: 0, warnings: [] };
   const sheet = workbook.Sheets[sheetName];
   const records = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
     defval: '',

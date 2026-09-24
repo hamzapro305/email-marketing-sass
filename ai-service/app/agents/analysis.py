@@ -109,10 +109,18 @@ async def analyze(req: AnalyzeRequest, cfg: LlmConfig) -> Analysis:
         instruction=_INSTRUCTION,
         prompt=_prompt(req),
         cfg=cfg,
+        # Output cap (reasoning included) sized to the JSON this agent returns.
+        max_tokens=3500,
     )
     data = extract_json(text)
+    # Some models wrap the object in a one-element list; unwrap that.
+    if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
+        data = data[0]
     if not isinstance(data, dict):
-        raise ValueError("Analysis agent returned non-object JSON")
+        raise ValueError(
+            f"Analysis agent returned non-object JSON ({type(data).__name__}): "
+            f"{str(data)[:200]}"
+        )
 
     comparisons = []
     for item in data.get("comparisons") or []:

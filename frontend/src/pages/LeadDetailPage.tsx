@@ -4,14 +4,13 @@ import {
   Briefcase,
   Building2,
   Check,
-  CheckCircle2,
-  Circle,
   Clock,
   ExternalLink,
   Globe,
   Lightbulb,
   ListChecks,
   Loader2,
+  Settings2,
   Mail,
   MapPin,
   Megaphone,
@@ -25,6 +24,7 @@ import {
   Target,
   TrendingUp,
   X,
+  XCircle,
 } from 'lucide-react';
 import { useLead } from '@/hooks/useLead';
 import { useLeadAudit } from '@/hooks/useLeadAudit';
@@ -32,12 +32,9 @@ import { fullName, initials, avatarGradient } from '@/lib/format';
 import type { Route } from '@/lib/nav';
 import {
   ACTIVE_LEAD_STATUSES,
-  AUDIT_STAGE_LABELS,
-  AUDIT_STAGE_ORDER,
   type AnalysisItem,
   type LeadAudit,
   type Rival,
-  type StageState,
   type WebsiteSignals,
 } from '@/api/types';
 import { Card } from '@/components/ui/card';
@@ -48,6 +45,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Separator } from '@/components/ui/separator';
 import { Header } from '@/components/layout/Header';
 import { StatusBadge } from '@/components/StatusBadge';
+import { AuditTrace, diagnose, engineLabel } from '@/components/AuditTrace';
 
 interface Props {
   id: string;
@@ -122,42 +120,6 @@ function ExternalA({ href, children }: { href: string; children: React.ReactNode
       {children}
       <ExternalLink className="h-3 w-3" />
     </a>
-  );
-}
-
-function StageRow({ stage, state }: { stage: string; state: StageState | undefined }) {
-  const status = state?.status ?? 'pending';
-  const icon =
-    status === 'completed' ? (
-      <CheckCircle2 className="h-4 w-4 text-success" />
-    ) : status === 'running' ? (
-      <Loader2 className="h-4 w-4 animate-spin text-primary" />
-    ) : status === 'failed' ? (
-      <X className="h-4 w-4 text-destructive" />
-    ) : (
-      <Circle className="h-4 w-4 text-muted-foreground/40" />
-    );
-  return (
-    <div className="flex items-center gap-3 py-1.5">
-      {icon}
-      <span
-        className={
-          status === 'pending' ? 'text-sm text-muted-foreground' : 'text-sm'
-        }
-      >
-        {AUDIT_STAGE_LABELS[stage as keyof typeof AUDIT_STAGE_LABELS] ?? stage}
-      </span>
-      {state?.durationMs != null && status === 'completed' && (
-        <span className="ml-auto text-xs tabular-nums text-muted-foreground">
-          {(state.durationMs / 1000).toFixed(1)}s
-        </span>
-      )}
-      {status === 'failed' && state?.error && (
-        <span className="ml-auto max-w-[50%] truncate text-xs text-destructive">
-          {state.error}
-        </span>
-      )}
-    </div>
   );
 }
 
@@ -292,6 +254,7 @@ export function LeadDetailPage({ id, isDark, onToggleTheme, navigate }: Props) {
   const email = audit?.email ?? null;
   const emailSubject = email?.subject ?? lead?.generatedSubject;
   const emailBody = email?.body ?? lead?.generatedBody;
+  const diagnosis = audit ? diagnose(audit) : null;
 
   return (
     <>
@@ -422,24 +385,56 @@ export function LeadDetailPage({ id, isDark, onToggleTheme, navigate }: Props) {
               </div>
             </Card>
 
-            {/* ── Pipeline progress ─────────────────────────── */}
+            {/* ── Diagnosis: why the audit looks the way it does ── */}
+            {diagnosis && (
+              <div
+                className={
+                  diagnosis.tone === 'success'
+                    ? 'flex items-start gap-3 rounded-xl border border-success/30 bg-success/5 px-4 py-3'
+                    : diagnosis.tone === 'destructive'
+                      ? 'flex items-start gap-3 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3'
+                      : 'flex items-start gap-3 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3'
+                }
+              >
+                {diagnosis.tone === 'success' ? (
+                  <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+                ) : diagnosis.tone === 'destructive' ? (
+                  <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+                ) : (
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">{diagnosis.title}</p>
+                  <p className="mt-0.5 text-sm text-muted-foreground">{diagnosis.detail}</p>
+                </div>
+                {diagnosis.action === 'settings' && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="shrink-0 gap-1.5"
+                    onClick={() => navigate({ name: 'settings' })}
+                  >
+                    <Settings2 className="h-3.5 w-3.5" />
+                    AI providers
+                  </Button>
+                )}
+              </div>
+            )}
+
+            {/* ── Pipeline trace ────────────────────────────── */}
             {audit && (
               <Section
                 icon={ListChecks}
-                title="Audit pipeline"
+                title="Audit trace"
                 subtitle={
                   audit.status === 'running'
-                    ? 'Running — this page updates live.'
+                    ? 'Running — every step appears here as it happens.'
                     : audit.status === 'failed'
-                      ? 'Failed — see the stage error below.'
-                      : `Completed${audit.completedAt ? ` ${new Date(audit.completedAt).toLocaleString()}` : ''}.`
+                      ? 'Failed — the failing step is expanded below.'
+                      : `Completed ${audit.completedAt ? new Date(audit.completedAt).toLocaleString() : ''} · click a stage to see exactly what it did.`
                 }
               >
-                <div className="divide-y">
-                  {AUDIT_STAGE_ORDER.map((stage) => (
-                    <StageRow key={stage} stage={stage} state={audit.stages?.[stage]} />
-                  ))}
-                </div>
+                <AuditTrace audit={audit} />
               </Section>
             )}
 
@@ -468,7 +463,7 @@ export function LeadDetailPage({ id, isDark, onToggleTheme, navigate }: Props) {
               <Section
                 icon={Building2}
                 title="Company research"
-                subtitle={`${audit.company.name} · engine: ${audit.company.engine}`}
+                subtitle={`${audit.company.name} · ${engineLabel(audit.company.engine)}`}
               >
                 <p className="text-sm leading-relaxed text-foreground/90">
                   {audit.company.summary}
@@ -539,7 +534,7 @@ export function LeadDetailPage({ id, isDark, onToggleTheme, navigate }: Props) {
                 <Section
                   icon={Sparkles}
                   title="Audit summary"
-                  subtitle={`engine: ${analysis.engine}`}
+                  subtitle={engineLabel(analysis.engine)}
                 >
                   <p className="text-sm leading-relaxed text-foreground/90">
                     {analysis.summary}
@@ -656,7 +651,7 @@ export function LeadDetailPage({ id, isDark, onToggleTheme, navigate }: Props) {
               <Section
                 icon={Mail}
                 title="Generated email"
-                subtitle={email?.engine ? `engine: ${email.engine}` : undefined}
+                subtitle={email?.engine ? engineLabel(email.engine) : undefined}
               >
                 <div className="rounded-xl border bg-muted/30 p-4">
                   {emailSubject && (

@@ -96,6 +96,7 @@ export class CampaignsService {
     imported: number;
     skipped: number;
     duplicates: number;
+    warnings: string[];
   }> {
     const campaign = await this.findOne(sessionId, id);
     if (campaign.status === CampaignStatus.Running) {
@@ -107,7 +108,7 @@ export class CampaignsService {
       throw new BadRequestException('No file provided (field name must be "file").');
     }
 
-    const { rows, skipped, duplicates: fileDuplicates } = parseFile(
+    const { rows, skipped, duplicates: fileDuplicates, warnings } = parseFile(
       file.originalname,
       file.mimetype,
       file.buffer,
@@ -165,7 +166,7 @@ export class CampaignsService {
       `Campaign ${id}: added "${file.originalname}" — ${inserted} leads ` +
         `(skipped ${skipped} invalid, ${duplicates} duplicates).`,
     );
-    return { file: fileDoc, imported: inserted, skipped, duplicates };
+    return { file: fileDoc, imported: inserted, skipped, duplicates, warnings };
   }
 
   /** Files uploaded to a campaign, newest first, with live pending counts. */

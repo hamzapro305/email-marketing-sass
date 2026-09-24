@@ -25,13 +25,13 @@ export class CreateLlmAccountDto {
   @MaxLength(120)
   model: string;
 
-  /** Required for gemini/openai; ignored for ollama. */
+  /** Required for gemini/openai/kimi; ignored for ollama. */
   @IsOptional()
   @IsString()
   @MaxLength(400)
   apiKey?: string;
 
-  /** Ollama base URL (e.g. http://localhost:11434). */
+  /** Ollama base URL (e.g. http://localhost:11434), or Kimi region base. */
   @IsOptional()
   @IsString()
   @MaxLength(255)

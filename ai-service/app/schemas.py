@@ -14,11 +14,22 @@ from pydantic import BaseModel, Field
 class LlmConfig(BaseModel):
     """The user's chosen LLM, sent per request by the backend."""
 
-    provider: str = ""  # gemini | openai | ollama
+    provider: str = ""  # gemini | openai | kimi | ollama
     model: str = ""
     apiKey: str = ""
     apiBase: str = ""
     temperature: float = 0.7
+
+
+class Usage(BaseModel):
+    """What one model call cost — surfaced in the audit trace."""
+
+    model: str = ""
+    inputTokens: int = 0
+    outputTokens: int = 0
+    # Subset of outputTokens spent on hidden reasoning (when reported).
+    reasoningTokens: int = 0
+    ms: int = 0
 
 
 class Lead(BaseModel):
@@ -99,6 +110,9 @@ class BriefResponse(BaseModel):
     profile: CompanyProfileOut
     rivals: List[RivalOut]
     engine: str
+    # Why the fallback was used (empty when the LLM answered).
+    error: str = ""
+    usage: Optional[Usage] = None
 
 
 # ── /audit/analyze ────────────────────────────────────────────
@@ -161,6 +175,8 @@ class Analysis(BaseModel):
 class AnalyzeResponse(BaseModel):
     analysis: Analysis
     engine: str
+    error: str = ""
+    usage: Optional[Usage] = None
 
 
 # ── /email/write ──────────────────────────────────────────────
@@ -190,6 +206,8 @@ class WriteEmailResponse(BaseModel):
     subject: str
     body: str
     engine: str
+    error: str = ""
+    usage: Optional[Usage] = None
 
 
 # ── /llm/test ─────────────────────────────────────────────────

@@ -122,3 +122,31 @@ export const freshStages = (): AuditStages =>
   Object.fromEntries(
     STAGE_ORDER.map((s) => [s, freshStageState()]),
   ) as AuditStages;
+
+// ── Activity log (the step-by-step trace shown on the Lead page) ──
+
+export type AuditLogLevel = 'info' | 'success' | 'warn' | 'error';
+
+/** One human-readable line in the audit's activity trace. */
+export interface AuditLogEntry {
+  at: Date;
+  /** Stage the entry belongs to, or 'run' for run-level events. */
+  stage: AuditStage | 'run';
+  level: AuditLogLevel;
+  message: string;
+  /** Optional supporting detail (URLs, raw errors, counts) — shown expanded. */
+  detail?: string;
+}
+
+/**
+ * Records a line in the current stage's trace. Fire-and-forget for callers:
+ * the implementation serializes writes so entries keep their order.
+ */
+export type StageLogger = (
+  level: AuditLogLevel,
+  message: string,
+  detail?: string,
+) => void;
+
+/** No-op logger for callers outside the pipeline (e.g. Settings preview). */
+export const noopStageLogger: StageLogger = () => undefined;

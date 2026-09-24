@@ -100,7 +100,7 @@ sending anything.
 │       ├── campaigns/       # campaign CRUD, uploads, start, send processor
 │       ├── email-agent/     # nodemailer SMTP sender (pooled per account)
 │       ├── smtp-accounts/   # per-user SMTP accounts (in-app, masked)
-│       ├── llm-accounts/    # per-user LLM providers (Gemini/OpenAI/Ollama)
+│       ├── llm-accounts/    # per-user LLM providers (Gemini/OpenAI/Kimi/Ollama)
 │       ├── settings/        # per-user email-writing preferences
 │       └── health/          # deep health: mongo/redis/queue depths
 ├── ai-service/              # Google ADK agents (see ai-service/README.md)
@@ -137,7 +137,7 @@ Then open **http://localhost:3000**:
 
 1. **Settings → SMTP accounts** — add the account campaigns send from
    (required before starting a campaign).
-2. **Settings → AI providers** — add a Gemini/OpenAI/Ollama key (optional but
+2. **Settings → AI providers** — add a Gemini/OpenAI/Kimi/Ollama key (optional but
    recommended: without one, research summaries/analysis fall back to
    deterministic heuristics and no rivals are discovered).
 3. **Campaigns → New campaign** — name it, describe your offer (the email

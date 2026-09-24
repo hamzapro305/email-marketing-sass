@@ -30,6 +30,8 @@ interface ProviderMeta {
   defaultModel: string;
   needsKey: boolean;
   needsBase: boolean;
+  /** Shows an optional base URL field (placeholder = the default). */
+  optionalBase?: string;
   keyHint: string;
   modelHint: string;
 }
@@ -51,6 +53,15 @@ const PROVIDERS: Record<LlmProvider, ProviderMeta> = {
     keyHint: 'Key from platform.openai.com',
     modelHint: 'e.g. gpt-4o-mini',
   },
+  kimi: {
+    label: 'Kimi (Moonshot)',
+    defaultModel: 'kimi-k2.6',
+    needsKey: true,
+    needsBase: false,
+    optionalBase: 'https://api.moonshot.ai/v1',
+    keyHint: 'Key from platform.moonshot.ai',
+    modelHint: 'e.g. kimi-k2.6 / kimi-k3 / moonshot-v1-32k',
+  },
   ollama: {
     label: 'Ollama (local)',
     defaultModel: 'llama3.2',
@@ -61,7 +72,7 @@ const PROVIDERS: Record<LlmProvider, ProviderMeta> = {
   },
 };
 
-const PROVIDER_ORDER: LlmProvider[] = ['gemini', 'openai', 'ollama'];
+const PROVIDER_ORDER: LlmProvider[] = ['gemini', 'openai', 'kimi', 'ollama'];
 
 const emptyFor = (provider: LlmProvider): LlmAccountInput => ({
   label: '',
@@ -163,7 +174,7 @@ export function LlmAccountsPanel({ accounts, loading, onChange }: Props) {
         <div className="rounded-lg border border-dashed p-6 text-center">
           <p className="text-sm font-medium">No AI providers yet</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Add Gemini, OpenAI, or Ollama to write real, personalized emails.
+            Add Gemini, OpenAI, Kimi, or Ollama to write real, personalized emails.
           </p>
         </div>
       ) : (
@@ -319,10 +330,13 @@ function LlmAccountDialog({
         !f.model || Object.values(PROVIDERS).some((p) => p.defaultModel === f.model)
           ? PROVIDERS[provider].defaultModel
           : f.model,
+      // Base URLs are provider-specific — never carry one across providers.
       apiBase:
-        provider === 'ollama'
-          ? f.apiBase || 'http://localhost:11434'
-          : f.apiBase,
+        provider === f.provider
+          ? f.apiBase
+          : provider === 'ollama'
+            ? 'http://localhost:11434'
+            : '',
     }));
   };
 
@@ -342,7 +356,10 @@ function LlmAccountDialog({
         provider: form.provider,
         model: form.model.trim(),
         temperature: Number(form.temperature),
-        apiBase: meta.needsBase ? form.apiBase?.trim() : undefined,
+        apiBase:
+          meta.needsBase || meta.optionalBase
+            ? form.apiBase?.trim()
+            : undefined,
       };
       if (form.apiKey) payload.apiKey = form.apiKey;
 
@@ -365,12 +382,12 @@ function LlmAccountDialog({
     <Dialog open={open} onClose={saving ? () => undefined : onClose}>
       <DialogHeader
         title={isEdit ? 'Edit AI provider' : 'Add AI provider'}
-        description="Pick a provider and model. Gemini/OpenAI need an API key; Ollama runs locally with a base URL."
+        description="Pick a provider and model. Gemini/OpenAI/Kimi need an API key; Ollama runs locally with a base URL."
       />
       <form onSubmit={submit} className="space-y-4">
         <div className="space-y-1.5">
           <Label>Provider</Label>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {PROVIDER_ORDER.map((p) => (
               <button
                 key={p}
@@ -428,6 +445,22 @@ function LlmAccountDialog({
               }
               autoComplete="new-password"
             />
+          </div>
+        )}
+
+        {meta.optionalBase && (
+          <div className="space-y-1.5">
+            <Label htmlFor="l-base">Base URL (optional)</Label>
+            <Input
+              id="l-base"
+              value={form.apiBase ?? ''}
+              onChange={(e) => set('apiBase', e.target.value)}
+              placeholder={meta.optionalBase}
+            />
+            <p className="text-xs text-muted-foreground">
+              Leave blank for the international API. China-region keys need
+              https://api.moonshot.cn/v1.
+            </p>
           </div>
         )}
 

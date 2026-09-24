@@ -15,6 +15,7 @@ import { EmailComposeService } from '../ai/email-compose.service';
 import { CampaignCountersService } from '../pipeline/campaign-counters.service';
 import { SuppressionsService } from '../suppressions/suppressions.service';
 import { RedisCoordinationService } from '../redis/redis-coordination.service';
+import { cleanEmail } from '../ai/email-text';
 
 // Per-replica worker concurrency, read at import time so the decorator is
 // configured before the worker starts. Total throughput ≈ replicas × this.
@@ -137,15 +138,17 @@ export class SendProcessor extends WorkerHost {
       ? `${this.publicUrl}/api/unsubscribe?token=${token}`
       : undefined;
     const footer = unsubscribeUrl
-      ? `\n\n—\nDon't want emails like this? Unsubscribe: ${unsubscribeUrl}`
-      : `\n\n—\nDon't want emails like this? Just reply "unsubscribe".`;
+      ? `\n\n\nDon't want emails like this? Unsubscribe: ${unsubscribeUrl}`
+      : `\n\n\nDon't want emails like this? Just reply "unsubscribe".`;
 
     const result = await this.mailSender.sendToLead(
       smtp,
       lead,
       {
-        subject: lead.generatedSubject,
-        body: lead.generatedBody + footer,
+        // Re-cleaned at send time so drafts stored before the dash rule
+        // (or edited since) still go out clean.
+        subject: cleanEmail({ subject: lead.generatedSubject, body: '' }).subject,
+        body: cleanEmail({ subject: '', body: lead.generatedBody }).body + footer,
       },
       { unsubscribeUrl },
     );

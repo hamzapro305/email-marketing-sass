@@ -14,7 +14,10 @@ import {
 /** Raised when the AI service cannot be reached or answers garbage. */
 export class AiServiceError extends Error {}
 
-const DEFAULT_TIMEOUT_MS = 60_000;
+// Model calls on reasoning models routinely take 20-60s. Timeouts sit well
+// above that, and a timed-out call is never retried: the provider has already
+// billed the tokens, so a retry would pay twice for the same answer.
+const DEFAULT_TIMEOUT_MS = 120_000;
 
 /**
  * Typed HTTP client for the AI (Google ADK) service. One retry on transport
@@ -39,7 +42,7 @@ export class AiClientService {
   }
 
   analyzeAudit(req: AnalyzeRequest): Promise<AnalyzeResponse> {
-    return this.post<AnalyzeResponse>('/audit/analyze', req, 90_000);
+    return this.post<AnalyzeResponse>('/audit/analyze', req, 150_000);
   }
 
   writeEmail(req: WriteEmailRequest): Promise<ComposedEmail> {
@@ -79,6 +82,11 @@ export class AiClientService {
         return (await res.json()) as T;
       } catch (err) {
         if (err instanceof AiServiceError && !lastError) throw err;
+        if (err instanceof Error && err.name === 'AbortError') {
+          throw new AiServiceError(
+            `AI service ${path} timed out after ${timeoutMs / 1000}s (not retried — tokens were already spent)`,
+          );
+        }
         lastError = err;
       } finally {
         clearTimeout(timer);

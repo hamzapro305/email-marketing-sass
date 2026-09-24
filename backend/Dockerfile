@@ -24,4 +24,6 @@ COPY --from=build /app/dist ./dist
 USER node
 
 EXPOSE 3000
-CMD ["node", "dist/main.js"]
+# Many real sites (Webflow, big CDNs) send >16KB of response headers — Node's
+# default limit — which makes fetch fail with UND_ERR_HEADERS_OVERFLOW.
+CMD ["node", "--max-http-header-size=65536", "dist/main.js"]

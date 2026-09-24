@@ -6,12 +6,16 @@ import {
   CompanyProfile,
   CompanyProfileDocument,
 } from '../../audits/company-profile.schema';
-import { AuditAnalysis } from '../../audits/audit.types';
+import {
+  AuditAnalysis,
+  StageLogger,
+  noopStageLogger,
+} from '../../audits/audit.types';
 import { LeadAuditDocument } from '../../audits/lead-audit.schema';
 import { LeadDocument } from '../../leads/lead.schema';
 import { AiClientService } from '../../ai/ai-client.service';
 import { LocalFallbacksService } from '../../ai/local-fallbacks.service';
-import { LlmWirePayload } from '../../ai/ai.types';
+import { LlmWirePayload, formatUsage } from '../../ai/ai.types';
 
 /**
  * Turns the collected research (company profile, signals, rival evidence)
@@ -42,15 +46,22 @@ export class AnalysisService {
     lead: LeadDocument,
     audit: LeadAuditDocument,
     llm?: LlmWirePayload,
+    log: StageLogger = noopStageLogger,
   ): Promise<AuditAnalysis> {
     const domain = lead.companyDomain;
 
     if (domain) {
       const cached = await this.readCachedAnalysis(domain, Boolean(llm));
-      if (cached) return cached;
+      if (cached) {
+        log('success', 'Reused the cached analysis for this company', summarize(cached));
+        return cached;
+      }
+      log('info', 'No fresh cached analysis — computing one');
+    } else {
+      log('warn', 'No company domain — analysis cannot be cached or grounded in a website');
     }
 
-    const analysis = await this.compute(lead, audit, llm);
+    const analysis = await this.compute(lead, audit, llm, log);
 
     if (domain) {
       await this.profileModel
@@ -64,7 +75,8 @@ export class AnalysisService {
   private async compute(
     lead: LeadDocument,
     audit: LeadAuditDocument,
-    llm?: LlmWirePayload,
+    llm: LlmWirePayload | undefined,
+    log: StageLogger,
   ): Promise<AuditAnalysis> {
     const company = audit.company ?? {
       name: lead.company || lead.companyDomain || 'Unknown company',
@@ -77,6 +89,22 @@ export class AnalysisService {
       positioning: '',
       engine: 'none',
     };
+
+    const pageCount = (audit.companyPages ?? []).length;
+    const rivalCount = (audit.rivals ?? []).length;
+    const rivalPages = (audit.rivals ?? []).reduce((n, r) => n + r.pages.length, 0);
+    const evidence =
+      `Company pages: ${Math.min(pageCount, 3)} of ${pageCount} excerpted · ` +
+      `Signals: ${audit.companySignals ? 'yes' : 'none'} · ` +
+      `Competitors: ${rivalCount} (${rivalPages} scraped page${rivalPages === 1 ? '' : 's'})`;
+    if (llm) {
+      log('info', `Asking ${llm.provider} to analyze the evidence`, evidence);
+    } else {
+      log('warn', 'No AI provider configured — the analysis will be heuristic (signals only)', evidence);
+    }
+    if (pageCount === 0 && rivalCount === 0) {
+      log('warn', 'There is no evidence to analyze: no pages were read and no competitors were found. Expect an empty audit.');
+    }
 
     try {
       const res = await this.ai.analyzeAudit({
@@ -98,12 +126,32 @@ export class AnalysisService {
         })),
         llm,
       });
-      return { ...res.analysis, engine: res.engine };
+      const analysis = { ...res.analysis, engine: res.engine };
+      const cost = formatUsage(res.usage);
+      if (res.engine === 'fallback') {
+        log(
+          'warn',
+          'AI analysis unavailable — heuristic analysis used',
+          [res.error, cost && `Spent: ${cost}`].filter(Boolean).join('\n') || undefined,
+        );
+      } else {
+        log(
+          'success',
+          `${res.engine} returned the analysis`,
+          summarize(analysis) + (cost ? `\nCost: ${cost}` : ''),
+        );
+      }
+      return analysis;
     } catch (err) {
       this.logger.warn(
         `AI analysis failed for ${company.domain || lead._id} — using heuristics: ${
           err instanceof Error ? err.message : err
         }`,
+      );
+      log(
+        'warn',
+        'AI service unreachable — heuristic analysis from website signals used',
+        err instanceof Error ? err.message : String(err),
       );
       return this.fallbacks.analysisFromSignals(
         company,
@@ -128,3 +176,9 @@ export class AnalysisService {
     return doc.analysis;
   }
 }
+
+const summarize = (a: AuditAnalysis): string =>
+  `Engine: ${a.engine} · ${a.weaknesses.length} weaknesses · ${a.gaps.length} gaps · ` +
+  `${a.opportunities.length} opportunities · ${a.comparisons.length} comparisons · ` +
+  `${a.recommendations.length} recommendations` +
+  (a.summary ? `\n${a.summary}` : '');

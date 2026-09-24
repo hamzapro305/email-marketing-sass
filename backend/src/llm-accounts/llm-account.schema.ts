@@ -3,8 +3,13 @@ import { HydratedDocument } from 'mongoose';
 
 export type LlmAccountDocument = HydratedDocument<LlmAccount>;
 
-export type LlmProvider = 'gemini' | 'openai' | 'ollama';
-export const LLM_PROVIDERS: LlmProvider[] = ['gemini', 'openai', 'ollama'];
+export type LlmProvider = 'gemini' | 'openai' | 'kimi' | 'ollama';
+export const LLM_PROVIDERS: LlmProvider[] = [
+  'gemini',
+  'openai',
+  'kimi',
+  'ollama',
+];
 
 /**
  * A user-managed LLM configuration, scoped to an upload session. Mirrors how
@@ -24,15 +29,15 @@ export class LlmAccount {
   @Prop({ type: String, enum: LLM_PROVIDERS, required: true })
   provider: LlmProvider;
 
-  /** Model id, e.g. gemini-2.0-flash / gpt-4o-mini / llama3.2:3b. */
+  /** Model id, e.g. gemini-2.0-flash / gpt-4o-mini / kimi-k2.6 / llama3.2:3b. */
   @Prop({ required: true, trim: true })
   model: string;
 
-  /** API key for gemini/openai. Masked on read, never returned in full. */
+  /** API key for gemini/openai/kimi. Masked on read, never returned in full. */
   @Prop({ default: '' })
   apiKey: string;
 
-  /** Base URL for Ollama (ignored for gemini/openai). */
+  /** Base URL for Ollama; optional region override for Kimi. */
   @Prop({ trim: true, default: '' })
   apiBase: string;
 

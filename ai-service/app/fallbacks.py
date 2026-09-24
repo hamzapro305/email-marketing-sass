@@ -119,7 +119,7 @@ def fallback_analysis(req: AnalyzeRequest) -> Analysis:
     opportunities = [
         AnalysisItem(
             title=f"Fix: {w.title.lower()}",
-            detail="Addressing this is a concrete, provable improvement — a natural outreach angle.",
+            detail="Addressing this is a concrete, provable improvement and a natural outreach angle.",
             evidence=w.evidence,
         )
         for w in weaknesses[:4]
@@ -191,15 +191,15 @@ def fallback_email(req: WriteEmailRequest) -> WriteEmailResponse:
     lines = [f"Hi {greeting},", ""]
     if audit and audit.companySummary:
         first = _first_sentences(audit.companySummary, 1)
-        lines += [f"I spent some time on {company}'s site — {first[0].lower() + first[1:]}", ""]
+        lines += [f"I spent some time on {company}'s site: {first[0].lower() + first[1:]}", ""]
     else:
         lines += [f"I've been looking at {company} and had a thought to share.", ""]
     if weakness:
         lines += [f"One thing stood out: {weakness.detail[0].lower() + weakness.detail[1:]}", ""]
     if rival_names and opportunity:
         lines += [
-            f"Compared with {' and '.join(rival_names)}, that's a gap worth closing — "
-            f"{opportunity.detail[0].lower() + opportunity.detail[1:]}",
+            f"Compared with {' and '.join(rival_names)}, that's a gap worth closing. "
+            f"{opportunity.detail[0].upper() + opportunity.detail[1:]}",
             "",
         ]
 
