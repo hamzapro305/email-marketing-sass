@@ -7,6 +7,9 @@ import * as Joi from 'joi';
  */
 export const envValidationSchema = Joi.object({
   PORT: Joi.number().default(3000),
+  ADMIN_USERNAME: Joi.string().default('admin'),
+  ADMIN_PASSWORD: Joi.string().default('admin'),
+  JWT_SECRET: Joi.string().min(16).default('dev-only-change-this-jwt-secret'),
 
   // What this process does. Compose runs dedicated `api` and `worker` services
   // from the same image; `all` keeps single-process dev simple.

@@ -1,0 +1,245 @@
+# ─────────────────────────────────────────────────────────────
+# Postal mail server — Coolify deploy (Postal 3.3.7)
+#
+# Deploy as its own Coolify resource (separate from the app stack):
+#   Docker Compose Location: /postal/docker-compose.yml
+#
+# Required env vars (local: postal/.env, auto-loaded; Coolify: paste the same
+# values into the resource's Environment Variables — see postal/.env.example):
+#   POSTAL_DB_PASSWORD       (strong random string)
+#   POSTAL_RAILS_SECRET_KEY  (openssl rand -hex 64 — never change after first deploy)
+#
+# In Coolify, assign postal-web the domain:
+#   https://postal.artisticdesign.tech:5000
+# Traefik then issues the Let's Encrypt cert that postal-certs copies out of
+# /data/coolify/proxy/acme.json so the SMTP server can offer real STARTTLS.
+#
+# After first deploy:
+#   1. Create an admin:   docker exec -it <postal-web> postal make-user
+#   2. Publish the DKIM record printed in the postal-init logs as TXT
+#      postal._domainkey.rp.postal.artisticdesign.tech
+#   3. Set the VPS reverse DNS (PTR) to postal.artisticdesign.tech
+#   4. Confirm your provider allows OUTBOUND port 25
+# ─────────────────────────────────────────────────────────────
+
+x-postal-env: &postal-env
+  POSTAL_WEB_HOSTNAME: postal.artisticdesign.tech
+  POSTAL_WEB_PROTOCOL: https
+  POSTAL_SMTP_HOSTNAME: postal.artisticdesign.tech
+  MAIN_DB_HOST: mariadb
+  MAIN_DB_PORT: 3306
+  MAIN_DB_USERNAME: root
+  MAIN_DB_PASSWORD: ${POSTAL_DB_PASSWORD}
+  MAIN_DB_DATABASE: postal
+  MESSAGE_DB_HOST: mariadb
+  MESSAGE_DB_PORT: 3306
+  MESSAGE_DB_USERNAME: root
+  MESSAGE_DB_PASSWORD: ${POSTAL_DB_PASSWORD}
+  MESSAGE_DB_DATABASE_NAME_PREFIX: postal
+  RAILS_SECRET_KEY: ${POSTAL_RAILS_SECRET_KEY}
+  # Konfig splits arrays on commas — a JSON array here would become a literal
+  # '["..."]' hostname. Add more MX hosts comma-separated.
+  DNS_MX_RECORDS: postal.artisticdesign.tech
+  DNS_SPF_INCLUDE: spf.postal.artisticdesign.tech
+  DNS_RETURN_PATH_DOMAIN: rp.postal.artisticdesign.tech
+  DNS_ROUTE_DOMAIN: routes.postal.artisticdesign.tech
+  DNS_TRACK_DOMAIN: track.postal.artisticdesign.tech
+  # Must match the VPS reverse DNS (PTR) or receivers will distrust the HELO.
+  DNS_HELO_HOSTNAME: postal.artisticdesign.tech
+  # Postal's own mail (password resets, invites) goes through its SMTP server.
+  SMTP_HOST: postal-smtp
+  SMTP_PORT: 25
+  SMTP_FROM_NAME: Postal
+  SMTP_FROM_ADDRESS: noreply@artisticdesign.tech
+  SMTP_SERVER_TLS_CERTIFICATE_PATH: /certs/smtp.cert
+  SMTP_SERVER_TLS_PRIVATE_KEY_PATH: /certs/smtp.key
+  LOGGING_ENABLED: 'true'
+  LOGGING_LEVEL: INFO
+
+x-postal-base: &postal-base
+  image: ghcr.io/postalserver/postal:3.3.7
+  restart: unless-stopped
+  depends_on:
+    postal-init:
+      condition: service_completed_successfully
+  volumes:
+    - postal-config:/config
+
+services:
+  mariadb:
+    image: mariadb:10.11
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: postal
+      MARIADB_ROOT_PASSWORD: ${POSTAL_DB_PASSWORD}
+    command:
+      - --innodb-buffer-pool-size=512M
+      - --innodb-log-file-size=256M
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - postal-mariadb:/var/lib/mysql
+    healthcheck:
+      test: ['CMD-SHELL', 'mariadb-admin ping -h 127.0.0.1 -uroot -p"$${MARIADB_ROOT_PASSWORD}"']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # One-shot: signing key + DB create/migrate (idempotent: db:create postal:update).
+  postal-init:
+    image: ghcr.io/postalserver/postal:3.3.7
+    restart: 'no'
+    user: '0:0'
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      <<: *postal-env
+    volumes:
+      - postal-config:/config
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        KEY=/config/signing.key
+
+        # The signing key also signs the return-path DKIM record and webhooks,
+        # so it must be 2048-bit. Older 1024-bit keys are replaced.
+        BITS=0
+        if [ -f "$$KEY" ]; then
+          BITS=$$(openssl rsa -in "$$KEY" -noout -text 2>/dev/null | sed -n 's/.*(\([0-9]*\) bit.*/\1/p' | head -1)
+        fi
+        if [ "$${BITS:-0}" -lt 2048 ]; then
+          [ -f "$$KEY" ] && echo "!!! Replacing $${BITS}-bit signing key with 2048-bit — UPDATE THE DKIM DNS RECORD BELOW !!!"
+          openssl genrsa -out "$$KEY" 2048
+        else
+          echo "Signing key OK ($${BITS}-bit)."
+        fi
+        chown 999:999 "$$KEY"
+        chmod 600 "$$KEY"
+
+        postal initialize
+
+        echo "────────────────────────────────────────────────────────────"
+        echo "Return-path DKIM TXT record value:"
+        postal default-dkim-record
+        echo "────────────────────────────────────────────────────────────"
+
+  # Copies the Let's Encrypt cert Traefik (Coolify proxy) holds for
+  # postal.artisticdesign.tech into a volume the SMTP server can read.
+  postal-certs:
+    image: ldez/traefik-certs-dumper:v2.11.4
+    restart: unless-stopped
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        DOMAIN=postal.artisticdesign.tech
+        while true; do
+          rm -rf /tmp/dump
+          if traefik-certs-dumper file --version v3 --source /acme.json --dest /tmp/dump \
+               --domain-subdir --crt-name smtp --crt-ext .cert --key-name smtp --key-ext .key >/dev/null 2>&1 \
+             && [ -s "/tmp/dump/$$DOMAIN/smtp.cert" ] && [ -s "/tmp/dump/$$DOMAIN/smtp.key" ]; then
+            if ! cmp -s "/tmp/dump/$$DOMAIN/smtp.cert" /certs/smtp.cert || ! cmp -s "/tmp/dump/$$DOMAIN/smtp.key" /certs/smtp.key; then
+              # Key first, cert last: postal-smtp waits on the cert file.
+              install -m 600 -o 999 -g 999 "/tmp/dump/$$DOMAIN/smtp.key" /certs/smtp.key.new && mv /certs/smtp.key.new /certs/smtp.key
+              install -m 644 -o 999 -g 999 "/tmp/dump/$$DOMAIN/smtp.cert" /certs/smtp.cert.new && mv /certs/smtp.cert.new /certs/smtp.cert
+              echo "$$(date -u) Updated TLS certificate for $$DOMAIN"
+            fi
+          else
+            echo "$$(date -u) No certificate for $$DOMAIN in acme.json yet — is the domain assigned to postal-web in Coolify?"
+          fi
+          sleep 3600
+        done
+    volumes:
+      - /data/coolify/proxy/acme.json:/acme.json:ro
+      - postal-certs:/certs
+
+  postal-web:
+    <<: *postal-base
+    environment:
+      <<: *postal-env
+      WEB_SERVER_DEFAULT_PORT: 5000
+      WEB_SERVER_DEFAULT_BIND_ADDRESS: 0.0.0.0
+    command: postal web-server
+    expose:
+      - '5000'
+
+  postal-smtp:
+    <<: *postal-base
+    depends_on:
+      postal-init:
+        condition: service_completed_successfully
+      postal-certs:
+        condition: service_started
+    environment:
+      <<: *postal-env
+      SMTP_SERVER_DEFAULT_PORT: 25
+      SMTP_SERVER_DEFAULT_BIND_ADDRESS: 0.0.0.0
+    volumes:
+      - postal-config:/config
+      - postal-certs:/certs:ro
+    ports:
+      - '25:25'
+    # Enables STARTTLS once the cert exists, and restarts the server when the
+    # cert is renewed (Postal caches it in memory for the life of the process).
+    command:
+      - sh
+      - -c
+      - |
+        CERT=/certs/smtp.cert
+        KEY=/certs/smtp.key
+        i=0
+        while [ ! -s "$$CERT" ] || [ ! -s "$$KEY" ]; do
+          i=$$((i + 1))
+          [ "$$i" -gt 60 ] && break
+          echo "Waiting for TLS certificate ($$i/60)..."
+          sleep 5
+        done
+        if [ -s "$$CERT" ] && [ -s "$$KEY" ]; then
+          export SMTP_SERVER_TLS_ENABLED=true
+          echo "STARTTLS enabled."
+        else
+          echo "WARNING: no TLS certificate — starting WITHOUT STARTTLS (will restart when one appears)."
+        fi
+
+        certsum() { cat "$$CERT" "$$KEY" 2>/dev/null | md5sum; }
+        START_SUM=$$(certsum)
+
+        postal smtp-server &
+        PID=$$!
+        trap 'kill -TERM $$PID 2>/dev/null; wait $$PID; exit 0' TERM INT
+
+        while kill -0 $$PID 2>/dev/null; do
+          sleep 300 & wait $$!
+          if [ -s "$$CERT" ] && [ "$$(certsum)" != "$$START_SUM" ]; then
+            echo "TLS certificate changed — restarting SMTP server."
+            kill -TERM $$PID; wait $$PID
+            exit 0
+          fi
+        done
+        wait $$PID
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:9091/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 6m
+
+  postal-worker:
+    <<: *postal-base
+    environment:
+      <<: *postal-env
+      WORKER_THREADS: 2
+    command: postal worker
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:9090/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  postal-mariadb:
+  postal-config:
+  postal-certs:

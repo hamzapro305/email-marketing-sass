@@ -19,6 +19,7 @@ import { AuditsModule } from './audits/audits.module';
 import { ScraperModule } from './scraper/scraper.module';
 import { AiModule } from './ai/ai.module';
 import { HealthModule } from './health/health.module';
+import { AuthModule } from './auth/auth.module';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { HealthModule } from './health/health.module';
       }),
     }),
     CommonModule,
+    AuthModule,
     RedisModule,
     LeadsModule,
     AuditsModule,

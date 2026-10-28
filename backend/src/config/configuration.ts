@@ -53,6 +53,9 @@ export interface AppConfig {
   publicUrl: string;
   /** Max emails per hour per SMTP account (0 = unlimited). Spam-filter safe. */
   sendHourlyLimit: number;
+  adminUsername: string;
+  adminPassword: string;
+  jwtSecret: string;
 }
 
 const int = (v: string | undefined, fallback: number): number => {
@@ -91,5 +94,8 @@ export default (): { app: AppConfig } => ({
     maxRivals: int(process.env.MAX_RIVALS, 3),
     publicUrl: (process.env.PUBLIC_URL ?? '').replace(/\/$/, ''),
     sendHourlyLimit: int(process.env.SEND_HOURLY_LIMIT, 80),
+    adminUsername: process.env.ADMIN_USERNAME ?? 'admin',
+    adminPassword: process.env.ADMIN_PASSWORD ?? 'admin',
+    jwtSecret: process.env.JWT_SECRET ?? 'dev-only-change-this-jwt-secret',
   },
 });

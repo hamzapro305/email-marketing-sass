@@ -16,7 +16,7 @@ import type {
   SmtpTestResult,
   UploadResult,
 } from './types';
-import { getSessionId } from './session';
+const TOKEN_KEY = 'ems.adminToken';
 
 // Backend base URL. The SPA is served by the same nginx that proxies /api to
 // the backend, so a relative "/api" works everywhere (the Vite dev server
@@ -26,7 +26,7 @@ const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? '/api';
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const isForm = init?.body instanceof FormData;
   const headers: Record<string, string> = {
-    'x-session-id': getSessionId(),
+    ...(localStorage.getItem(TOKEN_KEY) ? { Authorization: `Bearer ${localStorage.getItem(TOKEN_KEY)}` } : {}),
     ...(isForm ? {} : { 'Content-Type': 'application/json' }),
     ...((init?.headers as Record<string, string>) ?? {}),
   };
@@ -41,6 +41,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!res.ok) {
+    if (res.status === 401 && path !== '/auth/login') window.dispatchEvent(new Event('ems:unauthorized'));
     let message = `Request failed (${res.status})`;
     try {
       const body = await res.json();
@@ -60,6 +61,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  login(username: string, password: string): Promise<{ accessToken: string; tokenType: string; expiresIn: number }> {
+    return request('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+  },
   // ── Campaigns ────────────────────────────────────────────────
   listCampaigns(): Promise<Campaign[]> {
     return request<Campaign[]>('/campaigns');

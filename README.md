@@ -135,6 +135,11 @@ curl http://localhost:3000/api/health/queues   # live pipeline + send queue dept
 
 Then open **http://localhost:3000**:
 
+Sign in with the single admin account (`admin` / `admin` by default). Set
+`ADMIN_USERNAME`, `ADMIN_PASSWORD`, and a private `JWT_SECRET` in the selected
+environment profile before deployment. All browsers share this administrator's
+campaigns, leads, and settings.
+
 1. **Settings → SMTP accounts** — add the account campaigns send from
    (required before starting a campaign).
 2. **Settings → AI providers** — add a Gemini/OpenAI/Kimi/Ollama key (optional but
