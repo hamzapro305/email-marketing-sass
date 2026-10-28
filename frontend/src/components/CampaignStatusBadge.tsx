@@ -1,4 +1,4 @@
-import { CheckCircle2, FileEdit, Loader2, XCircle } from 'lucide-react';
+import { CheckCircle2, FileEdit, Loader2, PauseCircle, XCircle } from 'lucide-react';
 import type { CampaignStatus } from '@/api/types';
 import { Badge, type BadgeProps } from '@/components/ui/badge';
 
@@ -25,6 +25,11 @@ const CONFIG: Record<
     label: 'Failed',
     variant: 'destructive',
     icon: <XCircle className="h-3 w-3" />,
+  },
+  stopped: {
+    label: 'Stopped',
+    variant: 'muted',
+    icon: <PauseCircle className="h-3 w-3" />,
   },
 };
 

@@ -10,6 +10,7 @@ import {
   Rocket,
   Loader2,
   Server,
+  Square,
 } from 'lucide-react';
 import type { UploadResult } from '@/api/types';
 import { api } from '@/api/client';
@@ -47,6 +48,7 @@ export function CampaignDetailPage({ id, isDark, onToggleTheme, navigate }: Prop
   } = useCampaignDetail(id);
   const smtp = useSmtpAccounts();
   const [starting, setStarting] = useState(false);
+  const [stopping, setStopping] = useState(false);
 
   const onError = useCallback((message: string) => {
     toast.error('Something went wrong', { description: message });
@@ -59,7 +61,7 @@ export function CampaignDetailPage({ id, isDark, onToggleTheme, navigate }: Prop
 
   const isRunning = campaign?.status === 'running';
   const isDone =
-    campaign?.status === 'completed' || campaign?.status === 'failed';
+    campaign?.status === 'completed' || campaign?.status === 'failed' || campaign?.status === 'stopped';
 
   const onImported = useCallback(
     (result: UploadResult) => {
@@ -116,6 +118,19 @@ export function CampaignDetailPage({ id, isDark, onToggleTheme, navigate }: Prop
     }
   }, [id, refresh, startPolling, onError]);
 
+  const stop = useCallback(async () => {
+    setStopping(true);
+    try {
+      await api.stopCampaign(id);
+      toast.success('Campaign stopped', { description: 'Queued emails were cancelled.' });
+      await refresh();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'Failed to stop campaign');
+    } finally {
+      setStopping(false);
+    }
+  }, [id, refresh, onError]);
+
   const backToCampaigns = () => navigate({ name: 'campaigns' });
 
   return (
@@ -169,6 +184,13 @@ export function CampaignDetailPage({ id, isDark, onToggleTheme, navigate }: Prop
                 )}
               </div>
 
+              <div className="flex flex-wrap gap-2">
+              {isRunning && (
+                <Button variant="outline" size="lg" onClick={stop} disabled={stopping}>
+                  {stopping ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
+                  {stopping ? 'Stopping…' : 'Stop campaign'}
+                </Button>
+              )}
               {!isRunning && pendingCount > 0 && (
                 <Button
                   size="lg"
@@ -190,6 +212,7 @@ export function CampaignDetailPage({ id, isDark, onToggleTheme, navigate }: Prop
                     : `${isDone ? 'Send new leads' : 'Start campaign'} · ${pendingCount}`}
                 </Button>
               )}
+              </div>
             </div>
 
             {/* Sending gate — no SMTP account configured */}

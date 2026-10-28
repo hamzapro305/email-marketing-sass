@@ -89,4 +89,10 @@ export class CampaignsController {
   async start(@SessionId() sessionId: string, @Param('id') id: string) {
     return this.campaignsService.start(sessionId, id);
   }
+
+  /** Stop a campaign and cancel jobs that have not started yet. */
+  @Post(':id/stop')
+  async stop(@SessionId() sessionId: string, @Param('id') id: string) {
+    return this.campaignsService.stop(sessionId, id);
+  }
 }

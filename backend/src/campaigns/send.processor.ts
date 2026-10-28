@@ -67,6 +67,13 @@ export class SendProcessor extends WorkerHost {
       this.logger.warn(`[${this.instanceId}] lead ${leadId} vanished — skipping.`);
       return;
     }
+    if (!campaign || campaign.status !== 'running') {
+      await this.leadModel.updateOne(
+        { _id: lead._id, status: { $ne: LeadStatus.Sent } },
+        { $set: { status: LeadStatus.Pending, errorMessage: null } },
+      ).exec();
+      return;
+    }
 
     // Resolve the SMTP account this campaign's session sends from. Starting a
     // campaign is gated on having one, but guard here too — if it's gone, fail
@@ -125,6 +132,18 @@ export class SendProcessor extends WorkerHost {
       });
       lead.generatedSubject = email.subject;
       lead.generatedBody = email.body;
+    }
+
+    const stillRunning = await this.campaignModel.exists({
+      _id: campaign._id,
+      status: 'running',
+    });
+    if (!stillRunning) {
+      await this.leadModel.updateOne(
+        { _id: lead._id, status: { $ne: LeadStatus.Sent } },
+        { $set: { status: LeadStatus.Pending, errorMessage: null } },
+      ).exec();
+      return;
     }
 
     lead.status = LeadStatus.Sending;

@@ -75,6 +75,16 @@ export class PipelineProcessor extends WorkerHost {
       this.logger.warn(`[${this.instanceId}] lead ${leadId} vanished — dropping job.`);
       return;
     }
+    if (
+      job.data.campaignId &&
+      !(await this.campaignModel.exists({
+        _id: job.data.campaignId,
+        status: 'running',
+      }))
+    ) {
+      await this.returnLeadToPending(leadId);
+      return;
+    }
     if (!audit) {
       // A newer run superseded this one; its jobs are stale by definition.
       return;
@@ -97,6 +107,16 @@ export class PipelineProcessor extends WorkerHost {
     } catch (err) {
       trace.log('error', 'Stage failed', err instanceof Error ? err.message : String(err));
       await trace.flush();
+      if (
+        job.data.campaignId &&
+        !(await this.campaignModel.exists({
+          _id: job.data.campaignId,
+          status: 'running',
+        }))
+      ) {
+        await this.returnLeadToPending(leadId);
+        return;
+      }
       await this.handleStageError(job, lead, err);
     }
   }
@@ -315,6 +335,13 @@ export class PipelineProcessor extends WorkerHost {
 
   /** Chain to the next stage; after the last one, hand off to sending. */
   private async advance(data: PipelineJobData): Promise<void> {
+    if (
+      data.campaignId &&
+      !(await this.campaignModel.exists({ _id: data.campaignId, status: 'running' }))
+    ) {
+      await this.returnLeadToPending(data.leadId);
+      return;
+    }
     const idx = STAGE_ORDER.indexOf(data.stage);
     const next = STAGE_ORDER[idx + 1];
 
@@ -350,6 +377,13 @@ export class PipelineProcessor extends WorkerHost {
         .exec();
       this.logger.log(`[${this.instanceId}] audit ready for lead ${data.leadId}.`);
     }
+  }
+
+  private async returnLeadToPending(leadId: string): Promise<void> {
+    await this.leadModel.updateOne(
+      { _id: leadId, status: { $ne: LeadStatus.Sent } },
+      { $set: { status: LeadStatus.Pending, errorMessage: null } },
+    ).exec();
   }
 
   private async handleStageError(

@@ -8,6 +8,7 @@ export enum CampaignStatus {
   Running = 'running',
   Completed = 'completed',
   Failed = 'failed',
+  Stopped = 'stopped',
 }
 
 @Schema({ timestamps: true, collection: 'campaigns' })

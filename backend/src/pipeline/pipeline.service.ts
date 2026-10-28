@@ -4,6 +4,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Queue } from 'bullmq';
 import { Model, Types } from 'mongoose';
 import { AuditStage } from '../audits/audit.types';
+import { SEND_QUEUE, SendJobData } from '../campaigns/queue.constants';
 import { AuditsService } from '../audits/audits.service';
 import { Lead, LeadDocument, LeadStatus } from '../leads/lead.schema';
 import {
@@ -27,6 +28,8 @@ export class PipelineService {
   constructor(
     @InjectQueue(PIPELINE_QUEUE)
     private readonly queue: Queue<PipelineJobData>,
+    @InjectQueue(SEND_QUEUE)
+    private readonly sendQueue: Queue<SendJobData>,
     @InjectModel(Lead.name)
     private readonly leadModel: Model<LeadDocument>,
     private readonly audits: AuditsService,
@@ -111,6 +114,23 @@ export class PipelineService {
       ...PIPELINE_JOB_OPTS,
       jobId: this.jobId(data),
     });
+  }
+
+  /** Remove waiting/delayed jobs for a stopped or deleted campaign. */
+  async cancelCampaignJobs(campaignId: string): Promise<void> {
+    const pendingStates = ['waiting', 'delayed', 'paused', 'prioritized'] as const;
+    const [pipelineJobs, sendJobs] = await Promise.all([
+      this.queue.getJobs([...pendingStates], 0, -1),
+      this.sendQueue.getJobs([...pendingStates], 0, -1),
+    ]);
+    await Promise.all([
+      ...pipelineJobs
+        .filter((job) => job.data.campaignId === campaignId)
+        .map(async (job) => { try { await job.remove(); } catch { /* It may have become active; workers check campaign status. */ } }),
+      ...sendJobs
+        .filter((job) => job.data.campaignId === campaignId)
+        .map(async (job) => { try { await job.remove(); } catch { /* It may have become active; workers check campaign status. */ } }),
+    ]);
   }
 
   /** Live queue depth, surfaced by the health endpoint. */

@@ -91,6 +91,10 @@ export const api = {
     return request<Campaign>(`/campaigns/${id}/start`, { method: 'POST' });
   },
 
+  stopCampaign(id: string): Promise<Campaign> {
+    return request<Campaign>(`/campaigns/${id}/stop`, { method: 'POST' });
+  },
+
   getCampaignLeads(id: string): Promise<Lead[]> {
     return request<Lead[]>(`/campaigns/${id}/leads`);
   },

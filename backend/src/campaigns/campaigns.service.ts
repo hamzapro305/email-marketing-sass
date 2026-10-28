@@ -313,6 +313,25 @@ export class CampaignsService {
     return campaign;
   }
 
+  /** Stop a running campaign and discard its queued pipeline and send jobs. */
+  async stop(sessionId: string, id: string): Promise<CampaignDocument> {
+    const campaign = await this.findOne(sessionId, id);
+    if (campaign.status === CampaignStatus.Stopped) return campaign;
+    if (campaign.status !== CampaignStatus.Running) {
+      throw new BadRequestException('Campaign is not running.');
+    }
+    campaign.status = CampaignStatus.Stopped;
+    campaign.completedAt = new Date();
+    await campaign.save();
+    await this.pipeline.cancelCampaignJobs(campaign._id.toString());
+    await this.leadModel.updateMany(
+      { campaignId: campaign._id, status: { $ne: LeadStatus.Sent } },
+      { $set: { status: LeadStatus.Pending, errorMessage: null } },
+    ).exec();
+    this.logger.log(`Campaign ${id} stopped.`);
+    return campaign;
+  }
+
   /** Leads belonging to a campaign, oldest first. */
   async findLeads(sessionId: string, id: string): Promise<LeadDocument[]> {
     const campaign = await this.findOne(sessionId, id);
@@ -323,12 +342,11 @@ export class CampaignsService {
       .exec();
   }
 
-  /** Delete a campaign and all of its leads + files. Not allowed mid-run. */
+  /** Delete a campaign and all of its leads + files, stopping it first if needed. */
   async remove(sessionId: string, id: string): Promise<{ deleted: boolean }> {
     const campaign = await this.findOne(sessionId, id);
-    if (campaign.status === CampaignStatus.Running) {
-      throw new BadRequestException('Cannot delete a running campaign.');
-    }
+    if (campaign.status === CampaignStatus.Running) await this.stop(sessionId, id);
+    await this.pipeline.cancelCampaignJobs(campaign._id.toString());
     await Promise.all([
       this.leadModel.deleteMany({ campaignId: campaign._id }).exec(),
       this.fileModel.deleteMany({ campaignId: campaign._id }).exec(),

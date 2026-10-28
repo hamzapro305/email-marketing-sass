@@ -8,7 +8,7 @@ export type LeadStatus =
   | 'sending'
   | 'sent'
   | 'failed';
-export type CampaignStatus = 'draft' | 'running' | 'completed' | 'failed';
+export type CampaignStatus = 'draft' | 'running' | 'completed' | 'failed' | 'stopped';
 
 /** Statuses that mean a worker is actively moving this lead. */
 export const ACTIVE_LEAD_STATUSES: LeadStatus[] = [

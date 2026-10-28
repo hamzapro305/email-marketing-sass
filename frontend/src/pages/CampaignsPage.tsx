@@ -4,6 +4,7 @@ import {
   Plus,
   Megaphone,
   Trash2,
+  Square,
   Users,
   CheckCircle2,
   AlertTriangle,
@@ -30,6 +31,7 @@ export function CampaignsPage({ isDark, onToggleTheme, navigate }: Props) {
   const { campaigns, loading, error, refresh } = useCampaigns();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [stoppingId, setStoppingId] = useState<string | null>(null);
 
   const onError = useCallback((message: string) => {
     toast.error('Something went wrong', { description: message });
@@ -61,6 +63,20 @@ export function CampaignsPage({ isDark, onToggleTheme, navigate }: Props) {
     },
     [refresh, onError],
   );
+
+  const onStop = useCallback(async (e: React.MouseEvent, campaign: Campaign) => {
+    e.stopPropagation();
+    setStoppingId(campaign._id);
+    try {
+      await api.stopCampaign(campaign._id);
+      toast.success('Campaign stopped', { description: campaign.name });
+      await refresh();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Failed to stop');
+    } finally {
+      setStoppingId(null);
+    }
+  }, [refresh, onError]);
 
   return (
     <>
@@ -165,6 +181,19 @@ export function CampaignsPage({ isDark, onToggleTheme, navigate }: Props) {
                       </span>
                     )}
                   </div>
+                  {c.status === 'running' && (
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="shrink-0"
+                      disabled={stoppingId === c._id}
+                      onClick={(e) => onStop(e, c)}
+                      aria-label={`Stop ${c.name}`}
+                      title="Stop campaign"
+                    >
+                      <Square className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
                   <Button
                     variant="ghost"
                     size="icon"

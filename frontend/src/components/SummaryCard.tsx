@@ -35,6 +35,7 @@ function Tile({
 
 export function SummaryCard({ campaign, onReset }: Props) {
   const failed = campaign.status === 'failed';
+  const stopped = campaign.status === 'stopped';
   const allSent = campaign.failedCount === 0 && campaign.sentCount > 0;
   const successRate =
     campaign.totalLeads === 0
@@ -67,7 +68,9 @@ export function SummaryCard({ campaign, onReset }: Props) {
         </div>
         <div>
           <h3 className="text-xl font-semibold tracking-tight">
-            {failed
+            {stopped
+              ? 'Campaign stopped'
+              : failed
               ? 'Campaign ended with errors'
               : allSent
                 ? 'All emails sent!'
